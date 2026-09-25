@@ -27,6 +27,13 @@ class EnvSettings(BaseSettings):
         ),
     )
 
+    database_url: str = Field(
+        ...,
+        description=(
+            "PostgreSql connection string"
+        )
+    )
+
     debug: bool = Field(default=False)
     allowed_hosts: list[str] = Field(default=["127.0.0.1", "localhost"])
 

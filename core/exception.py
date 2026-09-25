@@ -25,7 +25,7 @@ def custom_exception_handler(
         }
         return response
 
-    # If response is not None, then it is an uncaught insternal server crash(HTTP 500)
+    # If response is None, then it is an uncaught insternal server crash(HTTP 500)
     path = request.path if request else "unknown"
 
     error_logger.error(

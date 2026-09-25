@@ -12,6 +12,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 
+import dj_database_url
+
 from core.env import get_settings
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -82,10 +84,11 @@ ASGI_APPLICATION = "config.asgi.application"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.config(
+        default=env.database_url,
+        conn_max_age=600, #10 min persistent connection pool
+        conn_health_checks=True
+    )
 }
 
 
@@ -130,6 +133,8 @@ STATIC_URL = "static/"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+AUTH_USER_MODEL = "core.CustomUser"
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDER_CLASSES": [

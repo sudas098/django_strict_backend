@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from django.http import HttpRequest, HttpResponse
 
-access_logger = logging.getLogger('app.access')
+access_logger = logging.getLogger('django.access')
 
 class RequestContextMiddleware:
     """Attached a unique X-Request-ID and emits structured access log ."""
