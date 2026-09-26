@@ -1,5 +1,6 @@
 [tool.ruff]
 line-length = 88
+extend-exclude = ["*/migrations/*"]
 target-version = "py312"
 
 [tool.ruff.lint]

@@ -57,7 +57,7 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
         is_staff = models.BooleanField(default=False)
         date_joined = models.DateTimeField(default=timezone.now)
 
-        objects = CustomUserManager()
+        objects: CustomUserManager = CustomUserManager()
 
         USERNAME_FIELD: ClassVar[str] = "email"
         REQUIRED_FIELDS: ClassVar[list[str]] = []
