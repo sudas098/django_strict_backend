@@ -1,4 +1,7 @@
+from typing import Any
+
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from core.models import CustomUser
 
@@ -39,3 +42,15 @@ class UserRegistrationSerializer(serializers.ModelSerializer[CustomUser]):
             email = validated_data["email"],
             password = validated_data["password"]
         )
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Customizes token payload and ensure email authentication"""
+
+    username_field = "email"
+
+    @classmethod
+    def get_token(cls, user: Any) -> Any:
+        token = super().get_token(user)
+        # Custom claim embedded inside JWT payload
+        token["email"] = user.email
+        return token

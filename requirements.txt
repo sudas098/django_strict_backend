@@ -6,3 +6,4 @@ mypy
 django-stubs
 psycopg[binary]>=3.1.18
 dj-database-url
+djangorestframework-simplejwt
