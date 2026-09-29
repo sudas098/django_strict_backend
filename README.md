@@ -1,24 +1,37 @@
-Collaborative Document Backend API
+# Collaborative Document Backend API
+
 A strict, production-grade Django REST Framework backend built with security, relational data integrity, and static type safety as first-class architectural concerns.
+
 ---
-Features
-Custom Identity & Security: Custom User model using UUIDv4 primary keys (neutralizing ID enumeration attacks), email-based authentication, and atomic transaction boundaries during user provisioning.
-Stateless JWT Flow: Short-lived access tokens (15 minutes) with rolling refresh tokens (1 day) using standard asymmetric or symmetric signing.
-Collaborative Domain Modeling: Relational multi-tenant document architecture supporting document ownership and granular role-based memberships (`viewer`, `editor`).
-Database-Level Integrity Guarantees: Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
-Serverless PostgreSQL: Cloud database provisioning via Neon with connection-aware schema migrations.
-Strict Quality Enforcement: Static typing enforced across all modules via `mypy` (`django-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
+
+## Features
+
+- **Custom Identity & Security:** Custom User model using UUIDv4 primary keys (neutralizing ID enumeration attacks), email-based authentication, and atomic transaction boundaries during user provisioning.
+- **Stateless JWT Flow:** Short-lived access tokens (15 minutes) with rolling refresh tokens (1 day) using standard asymmetric or symmetric signing.
+- **Collaborative Domain Modeling:** Relational multi-tenant document architecture supporting document ownership and granular role-based memberships (`viewer`, `editor`).
+- **Database-Level Integrity Guarantees:** Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
+- **Serverless PostgreSQL:** Cloud database provisioning via Neon with connection-aware schema migrations.
+- **Strict Quality Enforcement:** Static typing enforced across all modules via `mypy` (`django-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
+
 ---
-Tech Stack
-Framework: Django 5.2 + Django REST Framework
-Database: PostgreSQL (hosted on Neon Serverless)
-Type Checking: `mypy` (with `django-stubs`, `djangorestframework-stubs`)
-Linting & Code Formatting: `ruff`
-Configuration Management: Pydantic Settings
-Authentication: `djangorestframework-simplejwt`
+
+## Tech Stack
+
+| Component | Technology |
+| :--- | :--- |
+| **Framework** | Django 5.2 + Django REST Framework |
+| **Database** | PostgreSQL (hosted on Neon Serverless) |
+| **Type Checking** | `mypy` (`django-stubs`, `djangorestframework-stubs`) |
+| **Linting & Formatting**| `ruff` |
+| **Configuration** | Pydantic Settings |
+| **Authentication** | `djangorestframework-simplejwt` |
+
 ---
-Architecture & Relational Domain Model
-Entity-Relationship Architecture
+
+## Architecture & Relational Domain Model
+
+### Entity-Relationship Diagram
+
 ```text
        +-----------------------+
        |      CustomUser       |
