@@ -1,6 +1,6 @@
 # Collaborative Document Backend API
 
-A strict, production-grade Django REST Framework backend built with security, relational data integrity, and static type safety as first-class architectural concerns.
+A strict, production-grade Django REST Framework backend built with security, relational data integrity, query optimization, and static type safety as first-class architectural concerns.
 
 ---
 
@@ -10,6 +10,9 @@ A strict, production-grade Django REST Framework backend built with security, re
 - **Stateless JWT Flow:** Short-lived access tokens (15 minutes) with rolling refresh tokens (1 day) using standard HMAC/RSA signing.
 - **Collaborative Domain Modeling:** Relational multi-tenant document architecture supporting document ownership and granular role-based memberships (`viewer`, `editor`).
 - **Database-Level Integrity Guarantees:** Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
+- **Multi-Tenant Scope Isolation:** Queryset filtering (`get_queryset`) strictly enforces that users can only access documents they own or are actively granted membership to.
+- **Zero $N+1$ Query Architecture:** Aggressive ORM query optimization leveraging `select_related` for single-valued relations and `prefetch_related` for multi-valued relations.
+- **Decoupled DTO Serializers:** Clean segregation of read representations (`DocumentSerializer`) from input validation schemas (`DocumentCreateUpdateSerializer`), with atomic server-side ownership injection (`request.user`).
 - **Serverless PostgreSQL:** Cloud database provisioning via Neon with connection-aware schema migrations.
 - **Strict Quality Enforcement:** Static typing enforced across all modules via `mypy` (`django-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
 
@@ -70,6 +73,59 @@ A strict, production-grade Django REST Framework backend built with security, re
 
 ---
 
+## Performance & Query Optimization (Preventing $N+1$ Traps)
+
+When serializing relational models with nested representations, naïve ORM queries trigger the **$N+1$ query problem**, firing 1 initial query for the list and $N$ individual queries for each related foreign key:
+
+```text
+# Naive execution without eager loading (50 records):
+SELECT * FROM documents;                     -- 1 query
+SELECT * FROM users WHERE id = ...;          -- 50 additional queries
+SELECT * FROM document_members WHERE ...;    -- 50 additional queries
+Total: 101 queries (Scales linearly with row count)
+```
+
+### Production Query Strategy
+
+To eliminate linear query amplification and preserve low latency under concurrent traffic, `DocumentViewSet.get_queryset()` enforces explicit eager loading:
+
+```python
+Document.objects.filter(
+    Q(owner=user) | Q(memberships__user=user)
+).distinct().select_related(
+    "owner"
+).prefetch_related(
+    "memberships__user"
+)
+```
+
+| Method | Target Relationship | SQL Execution Mechanism | Optimization Effect |
+| :--- | :--- | :--- | :--- |
+| `select_related("owner")` | Single-valued (`ForeignKey`, `OneToOne`) | SQL `INNER JOIN` | Collapses owner lookup into the primary query |
+| `prefetch_related("memberships__user")` | Multi-valued (`Reverse FK`, `ManyToMany`) | Batched SQL `WHERE id IN (...)` | Fetches all memberships and nested users in 2 constant queries |
+
+**Result:** Total database roundtrips remain strictly **constant ($\mathcal{O}(1)$)** regardless of whether the endpoint returns 10 or 1,000 documents.
+
+---
+
+## Security Architecture: Ownership Injection & Scope Isolation
+
+1. **Scope Isolation (`get_queryset`):**
+   Clients cannot access documents outside their authorization boundary. Queries are filtered using an `OR` condition (`Q(owner=request.user) | Q(memberships__user=request.user)`) combined with `.distinct()`, preventing leakage of private documents across tenants.
+
+2. **Server-Side Ownership Injection (`perform_create`):**
+   Clients are **never** trusted to provide the `owner` field in the request payload. The input serializer (`DocumentCreateUpdateSerializer`) strictly limits input fields to `["title", "content"]`, while `perform_create` automatically binds the verified JWT principal (`request.user`) server-side:
+   ```python
+   def perform_create(self, serializer: Any) -> None:
+       serializer.save(owner=self.request.user)
+   ```
+
+3. **Decoupled Read/Write DTOs (`get_serializer_class`):**
+   - **`DocumentCreateUpdateSerializer`:** Sanitized write-only boundary that ignores read-only metadata.
+   - **`DocumentSerializer`:** Detailed read-only DTO exposing full nested user profiles and membership ACL details.
+
+---
+
 ## Setup & Local Development
 
 ### 1. Environment & Dependencies
@@ -119,117 +175,118 @@ python manage.py runserver
 
 ## API Endpoints
 
-### Register New User
+### Authentication & Identity
 
+#### Register New User
 `POST /api/auth/register`
 
-Creates a new user account. Passwords are hashed before storage and the operation is wrapped in an atomic database transaction.
+- **Request Body:**
+  ```json
+  {
+    "email": "user@example.com",
+    "password": "StrongPassword123!"
+  }
+  ```
+- **Validation Rules:** Valid RFC-compliant email, unique; password 8–128 characters.
+- **Success Response (`201 Created`):**
+  ```json
+  {
+    "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
+    "email": "user@example.com",
+    "is_active": true,
+    "date_joined": "2026-09-26T11:34:43.068015Z"
+  }
+  ```
 
-**Request Body:**
-
-```json
-{
-  "email": "user@example.com",
-  "password": "StrongPassword123!"
-}
-```
-
-**Validation Rules:**
-- Email must be valid and unique
-- Password must be 8–128 characters
-
-**Success Response (`201 Created`):**
-
-```json
-{
-  "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
-  "email": "user@example.com",
-  "is_active": true,
-  "date_joined": "2026-09-26T11:34:43.068015Z"
-}
-```
-
-*Note: The password hash is never included in the response.*
-
----
-
-### Obtain JWT Pair (Login)
-
+#### Obtain JWT Pair (Login)
 `POST /api/auth/token`
 
-Authenticates a user with email and password, returning a short-lived access token and a longer-lived refresh token.
+- **Success Response (`200 OK`):**
+  ```json
+  {
+    "access": "<jwt_access_token>",
+    "refresh": "<jwt_refresh_token>"
+  }
+  ```
+  *(Access tokens expire in 15 minutes; refresh tokens expire in 1 day)*
 
-**Request Body:**
-
-```json
-{
-  "email": "user@example.com",
-  "password": "StrongPassword123!"
-}
-```
-
-**Success Response (`200 OK`):**
-
-```json
-{
-  "access": "ey...<jwt_access_token>",
-  "refresh": "ey...<jwt_refresh_token>"
-}
-```
-
-- Access tokens expire after **15 minutes**
-- Refresh tokens expire after **1 day**
-
----
-
-### Refresh Access Token
-
+#### Refresh Access Token
 `POST /api/auth/token/refresh`
 
-Exchanges a valid refresh token for a new access token without requiring re-authentication.
+- **Success Response (`200 OK`):**
+  ```json
+  {
+    "access": "<new_jwt_access_token>"
+  }
+  ```
 
-**Request Body:**
+#### Get Current User Profile
+`GET /api/users/me`
 
-```json
-{
-  "refresh": "ey...<jwt_refresh_token>"
-}
-```
-
-**Success Response (`200 OK`):**
-
-```json
-{
-  "access": "ey...<new_jwt_access_token>"
-}
-```
+- **Headers:** `Authorization: Bearer <access_token>`
+- **Success Response (`200 OK`):**
+  ```json
+  {
+    "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
+    "email": "user@example.com",
+    "is_active": true,
+    "date_joined": "2026-09-26T11:34:43.068015Z"
+  }
+  ```
 
 ---
 
-### Get Current User Profile
+### Collaborative Documents API
 
-`GET /api/users/me`
+All document endpoints require `Authorization: Bearer <access_token>`.
 
-Returns the profile of the currently authenticated user. Requires a valid access token.
+#### List Accessible Documents
+`GET /api/documents/`
 
-**Headers:**
+- Returns all documents where the caller is either the owner or an active member.
+- **Optimized via `select_related` and `prefetch_related` (zero $N+1$ queries).**
 
-```http
-Authorization: Bearer <access_token>
-```
+#### Create Document
+`POST /api/documents/`
 
-**Success Response (`200 OK`):**
+- **Request Body:**
+  ```json
+  {
+    "title": "Architecture Blueprint",
+    "content": "Sprint planning notes..."
+  }
+  ```
+- **Ownership:** `owner` is automatically injected from `request.user`.
+- **Success Response (`201 Created`):**
+  ```json
+  {
+    "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+    "title": "Architecture Blueprint",
+    "content": "Sprint planning notes...",
+    "owner": {
+      "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
+      "email": "user@example.com"
+    },
+    "memberships": [],
+    "created_at": "2026-09-30T13:14:00Z",
+    "updated_at": "2026-09-30T13:14:00Z"
+  }
+  ```
 
-```json
-{
-  "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
-  "email": "user@example.com",
-  "is_active": true,
-  "date_joined": "2026-09-26T11:34:43.068015Z"
-}
-```
+#### Retrieve Document Detail
+`GET /api/documents/<uuid:id>/`
 
-**Error Response (`401 Unauthorized`):** If the token is missing, invalid, or expired.
+- Returns detailed representation with nested member roles. Returns `404 Not Found` if user does not own or belong to the document.
+
+#### Update Document
+`PUT /api/documents/<uuid:id>/` or `PATCH /api/documents/<uuid:id>/`
+
+- Validated via `DocumentCreateUpdateSerializer`.
+
+#### Delete Document
+`DELETE /api/documents/<uuid:id>/`
+
+- **Success Response:** `204 No Content`
 
 ---
 
@@ -253,3 +310,4 @@ ruff check .
 - **`AUTH-202`**: User Registration Endpoint with Serializer Validation & Transaction Boundaries.
 - **`AUTH-203`**: Stateless JWT Authentication & Protected Profile Endpoint.
 - **`DOC-301`**: Domain Modeling, Relational Integrity & Query Performance (Document entity, role-based `DocumentMember`, compound unique constraints, and B-tree indexing).
+- **`DOC-302`**: Documents CRUD API, Atomic Ownership Ingestion, Multi-Tenant Scope Isolation & $N+1$ Query Elimination (`select_related`, `prefetch_related`).
