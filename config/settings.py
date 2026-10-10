@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -85,13 +86,41 @@ ASGI_APPLICATION = "config.asgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": dj_database_url.config(
-        default=env.database_url,
-        conn_max_age=600, #10 min persistent connection pool
-        conn_health_checks=True
-    )
-}
+if "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
+
+    CACHES = {
+       "default": {
+          "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+          "LOCATION": "test-cache",
+       }
+    }
+else:
+ DATABASES = {
+     "default": dj_database_url.config(  # type: ignore[dict-item]
+         default=env.database_url,
+         conn_max_age=600, #10 min persistent connection pool
+         conn_health_checks=True
+     )
+ }
+
+ CACHES = {
+    "default": {
+       "BACKEND": "django_redis.cache.RedisCache",
+       "LOCATION": env.redis_url,
+       "OPTIONS": {  # type: ignore[dict-item]
+          "CLIENT_CLASS": "django_redis.client.DefaultClient",
+          "IGNORE_EXCEPTIONS": True,
+          "SOCKET_CONNECTION_TIMEOUT": 5,
+          "SOCKET_TIMEOUT": 5,
+       }
+    }
+ }
 
 
 # Password validation

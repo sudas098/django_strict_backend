@@ -1,34 +1,33 @@
 # Collaborative Document Backend API
 
-A strict, production-grade Django REST Framework backend built with security, relational data integrity, query optimization, and static type safety as first-class architectural concerns.
+A strict, production-grade Django REST Framework backend built with security, relational data integrity, $O(1)$ query optimization, in-memory Redis caching, and static type safety as first-class architectural concerns.
 
----
+## Architecture Highlights
 
-## Features
-
-- **Custom Identity & Security**: Custom User model using UUIDv4 primary keys (neutralizing ID enumeration attacks), email-based authentication, and atomic transaction boundaries during user provisioning.
-- **Stateless JWT Flow**: Short-lived access tokens (15 minutes) with rolling refresh tokens (1 day) using standard HMAC/RSA signing.
-- **Collaborative Domain Modeling**: Relational multi-tenant document architecture supporting document ownership and granular role-based memberships (`viewer`, `editor`).
-- **Database-Level Integrity Guarantees**: Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
-- **Multi-Tenant Scope Isolation**: Queryset filtering (`get_queryset`) strictly enforces that users can only access documents they own or are actively granted membership to. Requests attempting to access unauthorized UUIDs return `404 Not Found` rather than revealing resource existence.
-- **Object-Level RBAC Enforcement**: Custom permission class (`IsDocumentCollaborator`) checks method-level capabilities per object, guaranteeing that deletions are owner-only and mutations require editor roles.
-- **Zero $N+1$ Query Architecture**: Aggressive ORM query optimization leveraging `select_related` for single-valued relations and `prefetch_related` for multi-valued relations.
-- **Decoupled DTO Serializers**: Clean segregation of read representations (`DocumentSerializer`) from input validation schemas (`DocumentCreateUpdateSerializer` and `DocumentMemberAddSerializer`), with atomic server-side ownership injection (`request.user`).
-- **Serverless PostgreSQL**: Cloud database provisioning via Neon with connection-aware schema migrations.
-- **Strict Quality Enforcement**: Static typing enforced across all modules via `mypy` (`django-stubs`, `djangorestframework-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
-
----
+* **Custom Identity Architecture**: Custom User model using UUIDv4 primary keys (neutralizing sequential ID enumeration and IDOR attack surfaces), RFC-compliant email authentication, and transactional user provisioning.
+* **Stateless JWT Security**: Dual-token flow via `djangorestframework-simplejwt` with short-lived access tokens (15 minutes) and rolling refresh tokens (1 day) using standard HMAC/RSA signing.
+* **Collaborative Multi-Tenant Domain**: Relational access model supporting document ownership and granular role-based memberships (`viewer`, `editor`).
+* **Database-Level Integrity Guarantees**: Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
+* **Multi-Tenant Scope Isolation**: Queryset filtering (`get_queryset`) strictly enforces that callers can only discover documents they own or actively collaborate on. Requests targeting unauthorized UUIDs return `404 Not Found` rather than `403`, eliminating resource enumeration leaks.
+* **Object-Level RBAC Enforcement**: Custom permission class (`IsDocumentCollaborator`) checks method-level capabilities per object, guaranteeing that deletions are owner-only and mutations require editor privileges.
+* **Zero $N+1$ Query Architecture**: Relational fetching optimized down to constant $O(1)$ database hits via `select_related` and `prefetch_related`.
+* **High-Throughput Redis Cache-Aside Layer**: In-memory caching layer backed by Redis (`django-redis`) with strict Time-To-Live (TTL: 300s) and proactive cache eviction on update (`PATCH`/`PUT`) and deletion (`DELETE`).
+* **Automated CI Quality Gates & Testing**: Complete integration test harness using `pytest`, `pytest-django`, and `factory_boy` dynamic model fixtures to validate RBAC rules, verify zero-query cache hits, and assert query budgets with zero mocking.
+* **Resilient Infrastructure Design**: Cloud database provisioning via Neon (PostgreSQL) with connection pooling (`conn_max_age=600`) paired with fail-open Redis connection options (`IGNORE_EXCEPTIONS = True`).
+* **Strict Quality Tooling**: Static typing enforced across all modules via `mypy` (`django-stubs`, `djangorestframework-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
 
 ## Tech Stack
 
-| Component | Technology |
-| :--- | :--- |
-| **Framework** | Django 5.2 + Django REST Framework |
-| **Database** | PostgreSQL (hosted on Neon Serverless) |
-| **Type Checking** | `mypy` (`django-stubs`, `djangorestframework-stubs`) |
-| **Linting & Formatting** | `ruff` |
-| **Configuration** | Pydantic Settings |
-| **Authentication** | `djangorestframework-simplejwt` |
+| Component | Technology | Rationale |
+| :--- | :--- | :--- |
+| **Framework** | Django 5.2 + DRF | Mature ORM, battle-tested security defaults, and flexible viewset architecture |
+| **Database** | PostgreSQL (Neon Serverless) | ACID transactions, native UUIDv4, robust connection pooling |
+| **Cache Engine** | Redis + `django-redis` | Sub-millisecond read latency, high-throughput memory storage, atomic evictions |
+| **Authentication** | `djangorestframework-simplejwt` | Stateless horizontally scalable token authentication |
+| **Testing Suite** | `pytest`, `pytest-django`, `factory_boy`, `Faker` | Fast test execution, isolated database states, schema-resilient fixtures |
+| **Static Analysis** | `mypy` (strict mode with `django-stubs`) | Compile-time type verification, catching `None` dereferences before runtime |
+| **Linter & Formatter** | `ruff` | Ultra-fast PEP 8 and import order compliance |
+| **Configuration** | Pydantic Settings | Fail-fast runtime environment variable validation |
 
 ---
 
@@ -37,40 +36,40 @@ A strict, production-grade Django REST Framework backend built with security, re
 ### Entity-Relationship Diagram
 
 ```text
-+-----------------------+
-|      CustomUser       |
-+-----------------------+
-| id (UUID, PK)         |
-| email (unique)        |
-+-----------------------+
-       | 1             | 1
-       | (owner)       | (member)
-       | N             | N
-       v               v
-+-----------------------+       +-----------------------------+
-|       Document        |       |       DocumentMember        |
-+-----------------------+       +-----------------------------+
-| id (UUID, PK)         |       | id (UUID, PK)               |
-| title (indexed)       |       | document_id (FK -> Document)|
-| content (text)        |<------| user_id (FK -> CustomUser)  |
-| owner_id (FK)         | 1     | role (enum: viewer | editor)|
-| created_at (index)    |       | created_at                  |
-+-----------------------+       +-----------------------------+
-                                Constraint: UNIQUE(doc, user)
++------------------------------------+
+|             CustomUser             |
++------------------------------------+
+| id          : UUID (PK)            |
+| email       : EmailField (Unique)  |
+| is_active   : BooleanField         |
+| date_joined : DateTimeField        |
++------------------------------------+
+         | 1                      | 1
+         | (owner)                | (member)
+         | N                      | N
+         v                        v
++-----------------------+        +-----------------------------------+
+|       Document        |        |          DocumentMember           |
++-----------------------+        +-----------------------------------+
+| id         : UUID (PK)|        | id          : UUID (PK)           |
+| title      : CharField|<-------| document_id : FK -> Document      |
+| content    : TextField| 1      | user_id     : FK -> CustomUser    |
+| owner_id   : FK -> User        | role        : Enum(viewer, editor)|
+| created_at : DateTime |        | created_at  : DateTime            |
+| updated_at : DateTime |        +-----------------------------------+
++-----------------------+               Constraint: UNIQUE(doc, user)
 ```
 
 ### Relational Design Decisions
 
-1. **Cascade Lifecycles (`on_delete=models.CASCADE`)**:
-   - Deleting an **owner** cascades to purge all their authored `Document` instances.
-   - Deleting a **member user** cleans up their membership access record (`DocumentMember`) without deleting or corrupting the shared `Document`.
-   - Deleting a **document** automatically cascades to all associated `DocumentMember` entries, preventing orphaned ACL rows.
-
+1. **Foreign Key Cascade Lifecycles (`on_delete=models.CASCADE`)**:
+   * Deleting an **owner** cascades to purge all their authored `Document` records.
+   * Deleting a **collaborator user** cleans up their membership record (`DocumentMember`) without deleting or corrupting the shared `Document`.
+   * Deleting a **document** automatically cleans up all child `DocumentMember` entries, preventing orphaned ACL records.
 2. **Compound Unique Constraints**:
-   - Enforced at the database engine level via `models.UniqueConstraint(fields=["document", "user"], name="unique_document_member")` to prevent race conditions during permission assignment.
-
+   * Enforced at the database engine level via `models.UniqueConstraint(fields=["document", "user"], name="unique_document_member")` to prevent race conditions during permission assignment.
 3. **Indexing Strategy**:
-   - Dedicated indexes on `owner_id`, `created_at`, and `title` to accelerate `WHERE` filtering and ordered pagination scans (`ORDER BY created_at DESC`).
+   * Dedicated B-tree indexes on `owner_id`, `created_at`, and `title` to accelerate `WHERE` filtering and ordered pagination scans (`ORDER BY created_at DESC`).
 
 ---
 
@@ -79,7 +78,7 @@ A strict, production-grade Django REST Framework backend built with security, re
 Object-level access rules enforced via `IsDocumentCollaborator`:
 
 | Operation | HTTP Method | Document Owner | Collaborator (`editor`) | Collaborator (`viewer`) | Non-Member / Anonymous |
-| :--- | :--- | :---: | :---: | :---: | :---: |
+| :--- | :--- | :--- | :--- | :--- | :--- |
 | **View Document** | `GET`, `HEAD`, `OPTIONS` | Allowed | Allowed | Allowed | `404 Not Found` / `401` |
 | **Update Document** | `PUT`, `PATCH` | Allowed | Allowed | `403 Forbidden` | `404 Not Found` / `401` |
 | **Delete Document** | `DELETE` | Allowed | `403 Forbidden` | `403 Forbidden` | `404 Not Found` / `401` |
@@ -87,19 +86,54 @@ Object-level access rules enforced via `IsDocumentCollaborator`:
 
 ---
 
-## Performance & Query Optimization (Preventing $N+1$ Traps)
+## High-Performance Caching & Cache-Aside Architecture
+
+High-throughput read endpoints that mutate rarely (`GET /api/documents/{id}/`) are decoupled from direct PostgreSQL execution using an **in-memory Cache-Aside (Lazy Loading)** design pattern.
+
+### Cache-Aside Sequence Flow
+
+```text
+GET /api/documents/{id}/
+     │
+     ▼
+[ Check Cache (Key: "doc:{id}") ]
+     │
+     ├── HIT  ──► Return cached JSON directly (0 SQL queries executed)
+     │
+     └── MISS ──► 1. Query PostgreSQL via ORM (enforcing RBAC permission checks)
+                  2. Serialize payload
+                  3. Store in Redis (TTL: 300s)
+                  4. Return JSON response
+
+PATCH / PUT / DELETE /api/documents/{id}/
+     │
+     ▼
+1. Mutate / Delete record in PostgreSQL
+2. Evict / Invalidate cache key: cache.delete(f"doc:{id}")
+```
+
+### Invalidation Policy & Fault Tolerance
+* **Deterministic Cache Keys**: Formatted as `doc:{id}` to establish discrete namespace boundaries.
+* **Proactive Invalidation**: Handled in view lifecycle hooks (`perform_update` and `perform_destroy`), guaranteeing that stale representations never outlive a write transaction.
+* **Fail-Open Resilience**: Configured with `IGNORE_EXCEPTIONS = True` and strict connection timeouts (5s). If the Redis cluster encounters downtime, the backend automatically falls back to direct database execution rather than dropping user requests.
+* **Isolated Testing Environment**: During `pytest` sessions, cache backend cleanly routes to Django's in-memory `LocMemCache`, eliminating network dependencies while validating eviction behavior.
+
+---
+
+## Performance & Query Optimization ($O(1)$ Constant Queries)
 
 When serializing relational models with nested representations, naïve ORM queries trigger the **$N+1$ query problem**, firing 1 initial query for the list and $N$ individual queries for each related foreign key:
 
-```text
-# Naïve execution without eager loading (50 records):
-SELECT * FROM documents;                          -- 1 query
-SELECT * FROM users WHERE id = ...;               -- 50 additional queries
-SELECT * FROM document_members WHERE ...;         -- 50 additional queries
-Total: 101 queries (Scales linearly with row count)
+```sql
+-- Naïve execution without eager loading (fetching 10 documents with 2 members each):
+SELECT * FROM documents;                     -- 1 query
+SELECT * FROM users WHERE id = ...;          -- 10 queries (one per owner)
+SELECT * FROM document_members WHERE ...;    -- 10 queries (one per document)
+SELECT * FROM users WHERE id IN (...);       -- 10 queries (nested member users)
+-- Total: 31+ queries (scales linearly with result size)
 ```
 
-### Production Query Strategy
+### Eager Loading Strategy
 
 To eliminate linear query amplification and preserve low latency under concurrent traffic, `DocumentViewSet.get_queryset()` enforces explicit eager loading:
 
@@ -113,31 +147,53 @@ Document.objects.filter(
 )
 ```
 
-| Method | Target Relationship | SQL Execution Mechanism | Optimization Effect |
-| :--- | :--- | :--- | :--- |
-| `select_related("owner")` | Single-valued (`ForeignKey`, `OneToOne`) | SQL `INNER JOIN` | Collapses owner lookup into the primary query |
-| `prefetch_related("memberships__user")` | Multi-valued (`Reverse FK`, `ManyToMany`) | Batched SQL `WHERE id IN (...)` | Fetches all memberships and nested users in 2 constant queries |
+* **`select_related("owner")`**: Performs an SQL `INNER JOIN` in the primary query to retrieve author data in a single roundtrip.
+* **`prefetch_related("memberships__user")`**: Uses batched SQL `WHERE id IN (...)` queries to load all memberships and nested user representations in 1 additional query.
 
-**Result:** Total database roundtrips remain strictly **constant ($\mathcal{O}(1)$)** regardless of whether the endpoint returns 10 or 1,000 documents.
+**Result:** Total database queries remain strictly **constant ($O(1)$)** regardless of whether the endpoint returns 10 or 1,000 documents.
 
 ---
 
 ## Security Architecture: Ownership Injection & Scope Isolation
 
 1. **Scope Isolation (`get_queryset`)**:
-   Clients cannot access documents outside their authorization boundary. Queries are filtered using an `OR` condition (`Q(owner=request.user) | Q(memberships__user=request.user)`) combined with `.distinct()`, preventing leakage of private documents across tenants. Requests attempting to access unauthorized UUIDs return `404 Not Found` to prevent object existence enumeration.
-
+   Clients cannot access documents outside their authorization boundary. Queries are filtered using an `OR` condition (`Q(owner=request.user) | Q(memberships__user=request.user)`) combined with `.distinct()`, preventing cross-tenant leakage. Requests targeting unauthorized UUIDs return `404 Not Found` to prevent object existence enumeration.
 2. **Server-Side Ownership Injection (`perform_create`)**:
    Clients are **never** trusted to provide the `owner` field in the request payload. The input serializer (`DocumentCreateUpdateSerializer`) strictly limits input fields to `["title", "content"]`, while `perform_create` automatically binds the verified JWT principal (`request.user`) server-side:
    ```python
    def perform_create(self, serializer: Any) -> None:
        serializer.save(owner=self.request.user)
    ```
-
 3. **Decoupled Read/Write DTOs (`get_serializer_class`)**:
-   - `DocumentCreateUpdateSerializer`: Sanitized write-only boundary that ignores read-only metadata.
-   - `DocumentSerializer`: Detailed read-only DTO exposing full nested user profiles and membership ACL details.
-   - `DocumentMemberAddSerializer`: Validates target collaborator email and role constraints before updating membership tables.
+   * `DocumentCreateUpdateSerializer`: Sanitized write-only boundary that ignores read-only metadata.
+   * `DocumentSerializer`: Detailed read-only DTO exposing full nested user profiles and membership ACL details.
+   * `DocumentMemberAddSerializer`: Validates target collaborator email and role constraints before updating membership tables.
+
+---
+
+## Automated Testing & CI Quality Gates
+
+Enterprise systems enforce regression protection via automated integration tests rather than manual verification. The test suite leverages `pytest-django` and `factory_boy` dynamic model factories to construct isolated test fixtures in milliseconds.
+
+### Model Factories (`factory_boy`)
+
+Dynamic model generation abstracts fixture boilerplate and shields tests from schema changes:
+* **`UserFactory`**: Creates valid `CustomUser` instances with sequence-generated emails (`user{n}@example.com`) and hashed passwords.
+* **`DocumentFactory`**: Creates `Document` instances with randomized sentences and paragraphs using `factory.Faker`.
+* **`DocumentMemberFactory`**: Generates membership ACL relations linked via `factory.SubFactory`.
+
+### Verified Test Suites
+
+#### 1. RBAC & $N+1$ Performance Tests (`documents/tests/test_rbac.py`)
+* `test_owner_can_delete_document`: Asserts that an authenticated document owner can issue a `DELETE` request (`204 No Content`).
+* `test_viewer_cannot_update_document`: Asserts that an authenticated collaborator with role `viewer` attempting a `PATCH` request is blocked with `403 Forbidden`.
+* `test_viewer_cannot_delete_document`: Asserts that an authenticated collaborator with role `viewer` attempting a `DELETE` request is blocked with `403 Forbidden`.
+* `test_editor_can_update_document`: Asserts that an authenticated collaborator with role `editor` successfully updates the document title (`200 OK`).
+* `test_list_documents_avoids_n_plus_one`: Asserts via `django_assert_num_queries` that listing 10 documents with 20 nested members executes in a fixed query budget, guaranteeing $O(1)$ query scalability.
+
+#### 2. Caching & Invalidation Tests (`documents/tests/test_cache.py`)
+* `test_retrieve_uses_cache_on_subsequent_reads`: Asserts that an initial `GET` hits the database, while the immediate subsequent `GET` triggers a cache hit executing **exactly 0 database queries**.
+* `test_update_invalidates_cache`: Asserts that mutating a document via `PATCH` evicts the associated `doc:{id}` key from the cache, preventing stale reads.
 
 ---
 
@@ -163,6 +219,7 @@ Create a `.env` file in the project root:
 SECRET_KEY=your-super-secret-key-change-me
 DEBUG=True
 DATABASE_URL=postgresql://<user>:<password>@<neon-endpoint>.neon.tech/<dbname>?sslmode=require
+REDIS_URL=redis://127.0.0.1:6379/1
 ```
 
 ### 3. Migrations & Server
@@ -176,183 +233,54 @@ python manage.py migrate
 python manage.py runserver
 ```
 
----
-
-## Environment Variables Reference
-
-| Variable | Description |
-| :--- | :--- |
-| `SECRET_KEY` | Django cryptographic secret key |
-| `DEBUG` | Set to `False` in production |
-| `DATABASE_URL` | PostgreSQL connection string (Neon Serverless) |
-
----
-
-## API Endpoints
-
-### Authentication & Identity
-
-#### Register New User
-`POST /api/auth/register`
-
-- **Request Body:**
-  ```json
-  {
-    "email": "user@example.com",
-    "password": "StrongPassword123!"
-  }
-  ```
-- **Validation Rules:** Valid RFC-compliant email, unique; password 8–128 characters.
-- **Success Response (`201 Created`):**
-  ```json
-  {
-    "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
-    "email": "user@example.com",
-    "is_active": true,
-    "date_joined": "2026-09-26T11:34:43.068015Z"
-  }
-  ```
-
-#### Obtain JWT Pair (Login)
-`POST /api/auth/token`
-
-- **Success Response (`200 OK`):**
-  ```json
-  {
-    "access": "<jwt_access_token>",
-    "refresh": "<jwt_refresh_token>"
-  }
-  ```
-  *(Access tokens expire in 15 minutes; refresh tokens expire in 1 day)*
-
-#### Refresh Access Token
-`POST /api/auth/token/refresh`
-
-- **Success Response (`200 OK`):**
-  ```json
-  {
-    "access": "<new_jwt_access_token>"
-  }
-  ```
-
-#### Get Current User Profile
-`GET /api/users/me`
-
-- **Headers:** `Authorization: Bearer <access_token>`
-- **Success Response (`200 OK`):**
-  ```json
-  {
-    "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
-    "email": "user@example.com",
-    "is_active": true,
-    "date_joined": "2026-09-26T11:34:43.068015Z"
-  }
-  ```
-
----
-
-### Collaborative Documents API
-
-All document endpoints require `Authorization: Bearer <access_token>`.
-
-#### List Accessible Documents
-`GET /api/documents/`
-
-- Returns all documents where the caller is either the owner or an active member.
-- **Optimized via `select_related` and `prefetch_related` (zero $N+1$ queries).**
-
-#### Create Document
-`POST /api/documents/`
-
-- **Request Body:**
-  ```json
-  {
-    "title": "Architecture Blueprint",
-    "content": "Sprint planning notes..."
-  }
-  ```
-- **Ownership:** `owner` is automatically injected from `request.user`.
-- **Success Response (`201 Created`):**
-  ```json
-  {
-    "id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-    "title": "Architecture Blueprint",
-    "content": "Sprint planning notes...",
-    "owner": {
-      "id": "f3241155-ebda-4355-bfab-ec06bc45cee1",
-      "email": "user@example.com"
-    },
-    "memberships": [],
-    "created_at": "2026-09-30T13:14:00Z",
-    "updated_at": "2026-09-30T13:14:00Z"
-  }
-  ```
-
-#### Retrieve Document Detail
-`GET /api/documents/<uuid:id>/`
-
-- Returns detailed representation with nested member roles. Returns `404 Not Found` if user does not own or belong to the document.
-
-#### Update Document
-`PUT /api/documents/<uuid:id>/` or `PATCH /api/documents/<uuid:id>/`
-
-- Validated via `DocumentCreateUpdateSerializer`.
-- Permitted for **Document Owner** and **Editors**. Returns `403 Forbidden` if attempted by a `viewer`.
-
-#### Delete Document
-`DELETE /api/documents/<uuid:id>/`
-
-- Restricted strictly to **Document Owner**. Returns `403 Forbidden` for all collaborators (`viewer` or `editor`).
-- **Success Response:** `204 No Content`
-
-#### Add / Update Document Member
-`POST /api/documents/<uuid:id>/members/`
-
-- Restricted to **Document Owner**.
-- **Request Body:**
-  ```json
-  {
-    "email": "collaborator@example.com",
-    "role": "viewer"
-  }
-  ```
-- **Validation Rules:**
-  - Owner cannot add themselves as a collaborator (`400 Bad Request`).
-  - Target user must exist (`404 Not Found`).
-- **Success Response (`201 Created` / `200 OK`):**
-  ```json
-  {
-    "id": "7a35e89a-05a2-4a0b-8d48-9366df0285a8",
-    "user": {
-      "id": "c138f28d-71b5-4122-b586-b4845e2ad611",
-      "email": "collaborator@example.com"
-    },
-    "role": "viewer",
-    "created_at": "2026-10-08T02:04:05Z"
-  }
-  ```
-
----
-
-## Development Checks
-
-Run these static checks prior to committing or creating pull requests:
+### 4. Running Quality Gates
 
 ```powershell
-# Run type checks across all domain apps
+# Run full automated test suite (RBAC + Caching)
+pytest
+
+# Static typing verification
 mypy core config documents
 
-# Lint and check import formatting
+# Fast linting and format inspection
 ruff check .
 ```
 
 ---
 
-## Ticket Reference & Engineering Sprints
+## API Endpoints Reference
 
-- **`AUTH-201`**: Custom User Model with UUID Primary Key, PostgreSQL Integration, and Zero Schema Drift.
-- **`AUTH-202`**: User Registration Endpoint with Serializer Validation & Transaction Boundaries.
-- **`AUTH-203`**: Stateless JWT Authentication & Protected Profile Endpoint.
-- **`DOC-301`**: Domain Modeling, Relational Integrity & Query Performance (Document entity, role-based `DocumentMember`, compound unique constraints, and B-tree indexing).
-- **`DOC-302`**: Documents CRUD API, Atomic Ownership Ingestion, Multi-Tenant Scope Isolation & $N+1$ Query Elimination (`select_related`, `prefetch_related`).
-- **`DOC-303`**: Granular Object-Level Permissions (`IsDocumentCollaborator`), Member Delegation Endpoint (`/members/`), and Owner-Only Destruction Protections.
+### Authentication & Identity
+
+| Method | Endpoint | Description | Auth Required |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/register` | Register new user account | No |
+| `POST` | `/api/auth/token` | Obtain JWT pair (access + refresh) | No |
+| `POST` | `/api/auth/token/refresh` | Refresh access token | No |
+| `GET` | `/api/users/me` | Fetch authenticated user profile | Bearer JWT |
+
+### Collaborative Documents
+
+All document endpoints require `Authorization: Bearer <access_token>`.
+
+| Method | Endpoint | Description | Permitted Roles |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/documents/` | List accessible documents ($O(1)$ query optimized) | Owner, Editor, Viewer |
+| `POST` | `/api/documents/` | Create new document (injects `request.user`) | Authenticated |
+| `GET` | `/api/documents/<uuid:id>/` | Retrieve document detail (Redis Cache-Aside enabled) | Owner, Editor, Viewer |
+| `PUT`/`PATCH` | `/api/documents/<uuid:id>/` | Update document title or content (evicts cache) | Owner, Editor |
+| `DELETE` | `/api/documents/<uuid:id>/` | Delete document (evicts cache) | Owner strictly |
+| `POST` | `/api/documents/<uuid:id>/members/` | Add or update collaborator membership | Owner strictly |
+
+---
+
+## Engineering Sprint Changelog
+
+* **`AUTH-201`**: Custom User Model with UUID Primary Key, PostgreSQL Integration, and Zero Schema Drift.
+* **`AUTH-202`**: User Registration Endpoint with Serializer Validation & Transaction Boundaries.
+* **`AUTH-203`**: Stateless JWT Authentication & Protected Profile Endpoint.
+* **`DOC-301`**: Domain Modeling, Relational Integrity & Query Performance (Document entity, role-based `DocumentMember`, compound unique constraints, and B-tree indexing).
+* **`DOC-302`**: Documents CRUD API, Atomic Ownership Ingestion, Multi-Tenant Scope Isolation & $N+1$ Query Elimination (`select_related`, `prefetch_related`).
+* **`DOC-303`**: Granular Object-Level Permissions (`IsDocumentCollaborator`), Member Delegation Endpoint (`/members/`), and Owner-Only Destruction Protections.
+* **`TEST-401`**: Enterprise Automated Testing Harness & CI Quality Gates (`pytest-django`, `factory_boy` dynamic model factories, RBAC matrix regression testing, and query-count assertions).
+* **`CACHE-501`**: High-Throughput In-Memory Caching Layer (`django-redis`, Cache-Aside pattern, zero-query subsequent reads, and proactive cache invalidation policies).

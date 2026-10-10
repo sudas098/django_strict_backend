@@ -30,3 +30,11 @@ plugins = [
 
 [tool.django-stubs]
 django_settings_module = "config.settings"
+
+[[tool.mypy.overrides]]
+module = [
+    "core.factories",
+    "documents.factories",
+    "documents.tests.*",
+]
+ignore_errors = true

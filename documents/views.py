@@ -1,5 +1,6 @@
 from typing import Any
 
+from django.core.cache import cache
 from django.db.models import Q, QuerySet
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -95,3 +96,33 @@ class DocumentViewSet(viewsets.ModelViewSet[Document]):
             output.data,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK
         )
+
+    def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
+        """Fetch document with cache-aside pattern."""
+        doc_id = kwargs.get("pk")
+        cache_key = f"doc:{doc_id}"
+
+        # 1. Cache HIT
+        cached_data = cache.get(cache_key)
+        if cached_data is not None:
+            return Response(cached_data, status=status.HTTP_200_OK)
+
+        # 2. Cache MISS -> Read DB with permission checks
+        instance = self.get_object()
+        serializer = self.get_serializer(instance)
+        data = serializer.data
+
+        # 3. Populate Cache (TTL: 300 seconds)
+        cache.set(cache_key, data, timeout=300)
+        return Response(data, status=status.HTTP_200_OK)
+
+    def perform_update(self, serializer: Any) -> None:
+        """Invalidate cache on update."""
+        instance = serializer.save()
+        cache.delete(f"doc:{instance.id}")
+
+    def perform_destroy(self, instance: Document) -> None:
+        """Invalidate cache on deletion."""
+        cache_key = f"doc:{instance.id}"
+        super().perform_destroy(instance)
+        cache.delete(cache_key)
