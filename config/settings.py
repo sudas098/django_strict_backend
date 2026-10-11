@@ -174,6 +174,15 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+       "rest_framework.throttling.AnonRateThrottle",
+       "rest_framework.throttling.UserRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+       "anon": "30/minute",
+       "user": "60/minute",
+       "auth_anon": "5/minute",
+    },
     "EXCEPTION_HANDLER": "core.exception.custom_exception_handler",
 }
 

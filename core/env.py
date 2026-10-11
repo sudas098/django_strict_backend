@@ -39,7 +39,7 @@ class EnvSettings(BaseSettings):
 
     redis_url: str = Field(
         default="redis://127.0.0.1:6379/1",
-        description="Redis connection URL for caching and ratr limiting ."
+        description="Redis connection URL for caching and rate limiting ."
     )
 
 @lru_cache

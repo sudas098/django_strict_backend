@@ -3,6 +3,7 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
@@ -27,6 +28,8 @@ class RegisterView(APIView):
 
     authentication_classes = []
     permission_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_anon"
 
     def post(self, request: Request) -> Response:
         serializer = UserRegistrationSerializer(data=request.data)
@@ -42,6 +45,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     """Issues access and refresh JWTs for valid credentials"""
 
     serializer_class = CustomTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_anon"
 
 class CurrentUserView(APIView):
     """Return the authenticated user Profile"""

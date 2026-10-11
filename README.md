@@ -1,18 +1,19 @@
 # Collaborative Document Backend API
 
-A strict, production-grade Django REST Framework backend built with security, relational data integrity, $O(1)$ query optimization, in-memory Redis caching, and static type safety as first-class architectural concerns.
+A strict, production-grade Django REST Framework backend built with security, relational data integrity, $O(1)$ query optimization, in-memory Redis caching, tiered rate limiting, and static type safety as first-class architectural concerns.
 
 ## Architecture Highlights
 
 * **Custom Identity Architecture**: Custom User model using UUIDv4 primary keys (neutralizing sequential ID enumeration and IDOR attack surfaces), RFC-compliant email authentication, and transactional user provisioning.
 * **Stateless JWT Security**: Dual-token flow via `djangorestframework-simplejwt` with short-lived access tokens (15 minutes) and rolling refresh tokens (1 day) using standard HMAC/RSA signing.
+* **Tiered Rate Limiting & Abuse Defense**: Redis-backed sliding-window throttles enforcing strict quotas per endpoint sensitivity—protecting CPU-heavy auth endpoints against brute-force attacks and authenticated routes against resource starvation.
 * **Collaborative Multi-Tenant Domain**: Relational access model supporting document ownership and granular role-based memberships (`viewer`, `editor`).
 * **Database-Level Integrity Guarantees**: Compound unique constraints preventing duplicate role allocations, explicit foreign key cascade lifecycles, and composite B-tree indexes for fast filtering and sorted lookups.
 * **Multi-Tenant Scope Isolation**: Queryset filtering (`get_queryset`) strictly enforces that callers can only discover documents they own or actively collaborate on. Requests targeting unauthorized UUIDs return `404 Not Found` rather than `403`, eliminating resource enumeration leaks.
 * **Object-Level RBAC Enforcement**: Custom permission class (`IsDocumentCollaborator`) checks method-level capabilities per object, guaranteeing that deletions are owner-only and mutations require editor privileges.
 * **Zero $N+1$ Query Architecture**: Relational fetching optimized down to constant $O(1)$ database hits via `select_related` and `prefetch_related`.
 * **High-Throughput Redis Cache-Aside Layer**: In-memory caching layer backed by Redis (`django-redis`) with strict Time-To-Live (TTL: 300s) and proactive cache eviction on update (`PATCH`/`PUT`) and deletion (`DELETE`).
-* **Automated CI Quality Gates & Testing**: Complete integration test harness using `pytest`, `pytest-django`, and `factory_boy` dynamic model fixtures to validate RBAC rules, verify zero-query cache hits, and assert query budgets with zero mocking.
+* **Automated CI Quality Gates & Testing**: Complete integration test harness using `pytest`, `pytest-django`, and `factory_boy` dynamic model fixtures to validate RBAC rules, verify zero-query cache hits, enforce throttling limits, and assert query budgets with zero mocking.
 * **Resilient Infrastructure Design**: Cloud database provisioning via Neon (PostgreSQL) with connection pooling (`conn_max_age=600`) paired with fail-open Redis connection options (`IGNORE_EXCEPTIONS = True`).
 * **Strict Quality Tooling**: Static typing enforced across all modules via `mypy` (`django-stubs`, `djangorestframework-stubs`), fast code style and import hygiene via `ruff`, and strict environment validation via Pydantic Settings.
 
@@ -23,6 +24,7 @@ A strict, production-grade Django REST Framework backend built with security, re
 | **Framework** | Django 5.2 + DRF | Mature ORM, battle-tested security defaults, and flexible viewset architecture |
 | **Database** | PostgreSQL (Neon Serverless) | ACID transactions, native UUIDv4, robust connection pooling |
 | **Cache Engine** | Redis + `django-redis` | Sub-millisecond read latency, high-throughput memory storage, atomic evictions |
+| **Rate Limiter** | Redis In-Memory Counter | Atomic sliding-window tracking, zero database overhead for rejected requests |
 | **Authentication** | `djangorestframework-simplejwt` | Stateless horizontally scalable token authentication |
 | **Testing Suite** | `pytest`, `pytest-django`, `factory_boy`, `Faker` | Fast test execution, isolated database states, schema-resilient fixtures |
 | **Static Analysis** | `mypy` (strict mode with `django-stubs`) | Compile-time type verification, catching `None` dereferences before runtime |
@@ -70,6 +72,37 @@ A strict, production-grade Django REST Framework backend built with security, re
    * Enforced at the database engine level via `models.UniqueConstraint(fields=["document", "user"], name="unique_document_member")` to prevent race conditions during permission assignment.
 3. **Indexing Strategy**:
    * Dedicated B-tree indexes on `owner_id`, `created_at`, and `title` to accelerate `WHERE` filtering and ordered pagination scans (`ORDER BY created_at DESC`).
+
+---
+
+## Tiered Rate Limiting & Abuse Prevention (`RATE-502`)
+
+Public APIs face asymmetric threats: expensive compute operations (like cryptographic password hashing) can be abused to cause Denial-of-Service (DoS) and credential stuffing. The system implements a **tiered throttling topology** backed by atomic Redis operations:
+
+```text
+Incoming HTTP Request
+         │
+         ▼
+[ Throttling Gateway ]
+         │
+         ├── Unauthenticated (/api/auth/*) ──► ScopedRateThrottle ("auth_anon")
+         │                                      Key: throttle_anon_<client_ip>
+         │                                      Limit: 5 requests / minute
+         │
+         └── Authenticated (/api/documents/*) ─► UserRateThrottle
+                                                 Key: throttle_user_<user_id>
+                                                 Limit: 60 requests / minute
+```
+
+### Throttling Policy Matrix
+
+| Scope / Class | Target Endpoints | Tracking Key | Rate Limit | Threat Mitigated |
+| :--- | :--- | :--- | :--- | :--- |
+| **`ScopedRateThrottle`** (`auth_anon`) | `/api/auth/register/`, `/api/auth/token/` | Client IP Address (`throttle_anon_<ip>`) | **5 req / minute** | Credential stuffing, brute-force password guessing, PBKDF2 CPU starvation |
+| **`UserRateThrottle`** | `/api/documents/*` | Authenticated `user.pk` (`throttle_user_<id>`) | **60 req / minute** | Resource starvation, scraper bots; prevents NAT gateway IP collisions across shared subnets |
+| **`AnonRateThrottle`** | Global unauthenticated endpoints | Client IP Address (`throttle_anon_<ip>`) | **30 req / minute** | Broad automated scraping and endpoint scanning |
+
+* **Zero-Compute Interception**: When a client exceeds their quota, DRF intercepts the request before view logic or database execution, instantly returning **`429 Too Many Requests`** along with a standard error envelope and a `Retry-After` header. Abusive traffic costs **0 SQL queries**.
 
 ---
 
@@ -195,6 +228,9 @@ Dynamic model generation abstracts fixture boilerplate and shields tests from sc
 * `test_retrieve_uses_cache_on_subsequent_reads`: Asserts that an initial `GET` hits the database, while the immediate subsequent `GET` triggers a cache hit executing **exactly 0 database queries**.
 * `test_update_invalidates_cache`: Asserts that mutating a document via `PATCH` evicts the associated `doc:{id}` key from the cache, preventing stale reads.
 
+#### 3. Throttling & Abuse Prevention Tests (`core/tests/test_throttling.py`)
+* `test_registration_endpoint_limited`: Simulates rapid registration requests against `/api/auth/register/`. Asserts the first 5 requests succeed (`201 Created`), while the 6th request is rejected immediately with **`429 Too Many Requests`** matching standard error envelopes.
+
 ---
 
 ## Setup & Local Development
@@ -236,7 +272,7 @@ python manage.py runserver
 ### 4. Running Quality Gates
 
 ```powershell
-# Run full automated test suite (RBAC + Caching)
+# Run full automated test suite (RBAC + Caching + Throttling)
 pytest
 
 # Static typing verification
@@ -250,14 +286,16 @@ ruff check .
 
 ## API Endpoints Reference
 
+All canonical routes follow REST conventions and require trailing slashes (`/`):
+
 ### Authentication & Identity
 
-| Method | Endpoint | Description | Auth Required |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/api/auth/register` | Register new user account | No |
-| `POST` | `/api/auth/token` | Obtain JWT pair (access + refresh) | No |
-| `POST` | `/api/auth/token/refresh` | Refresh access token | No |
-| `GET` | `/api/users/me` | Fetch authenticated user profile | Bearer JWT |
+| Method | Endpoint | Description | Rate Limit | Auth Required |
+| :--- | :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/register/` | Register new user account | 5 req / min | No |
+| `POST` | `/api/auth/token/` | Obtain JWT pair (access + refresh) | 5 req / min | No |
+| `POST` | `/api/auth/token/refresh/` | Refresh access token | 30 req / min | No |
+| `GET` | `/api/users/me/` | Fetch authenticated user profile | 60 req / min | Bearer JWT |
 
 ### Collaborative Documents
 
@@ -284,3 +322,4 @@ All document endpoints require `Authorization: Bearer <access_token>`.
 * **`DOC-303`**: Granular Object-Level Permissions (`IsDocumentCollaborator`), Member Delegation Endpoint (`/members/`), and Owner-Only Destruction Protections.
 * **`TEST-401`**: Enterprise Automated Testing Harness & CI Quality Gates (`pytest-django`, `factory_boy` dynamic model factories, RBAC matrix regression testing, and query-count assertions).
 * **`CACHE-501`**: High-Throughput In-Memory Caching Layer (`django-redis`, Cache-Aside pattern, zero-query subsequent reads, and proactive cache invalidation policies).
+* **`RATE-502`**: Tiered Rate Limiting & Abuse Prevention (Redis atomic sliding-window throttling, scoped public IP protection against brute-force hashing, user quotas, and zero-SQL 429 interception).
