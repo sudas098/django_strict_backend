@@ -1,0 +1,55 @@
+# --- Python & Django Cache/Compiled Files ---
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/*.mo
+**/*.po
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# --- Virtual Environments (Crucial to ignore) ---
+.venv/
+venv/
+env/
+ENV/
+modules/
+
+# --- Local Databases & Media/Static Caches ---
+*.sqlite3
+*.sqlite3-journal
+*.db
+web/media/
+staticfiles/
+node_modules/
+
+# --- Secrets and Environment Files (Security risk) ---
+.env
+.env.*
+*.env
+secrets.json
+
+# --- IDEs and OS Metadata ---
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Version Control ---
+.git/
+.gitignore
+.gitattributes
+.hg/
+.svn/
+
+# --- Docker Configurations (Optional but recommended) ---
+Dockerfile
+docker-compose*.yml
+.dockerignore

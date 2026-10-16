@@ -100,6 +100,8 @@ if "pytest" in sys.modules or any("pytest" in arg for arg in sys.argv):
           "LOCATION": "test-cache",
        }
     }
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
 else:
  DATABASES = {
      "default": dj_database_url.config(  # type: ignore[dict-item]
@@ -225,3 +227,14 @@ LOGGING = {
         },
     },
 }
+
+
+# Celery Configuration
+CELERY_BROKER_URL = env.redis_url
+CELERY_RESULT_BACKEND = env.redis_url
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # Hard timeout: 30 minutes

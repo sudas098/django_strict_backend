@@ -16,6 +16,7 @@ from documents.serializers import (
     DocumentMemberSerializer,
     DocumentSerializer,
 )
+from documents.tasks import process_document_export
 
 
 class DocumentViewSet(viewsets.ModelViewSet[Document]):
@@ -126,3 +127,24 @@ class DocumentViewSet(viewsets.ModelViewSet[Document]):
         cache_key = f"doc:{instance.id}"
         super().perform_destroy(instance)
         cache.delete(cache_key)
+
+    @action(detail=True, methods=["POST"], url_path="export")
+    def export(
+        self,
+        request: Request,
+        pk: str | None = None
+    ) -> Response:
+        """Enqueues async export task returning  HTTP 202 immediately"""
+        document = self.get_object()
+
+        #Enqueue background task via Celery
+        task = process_document_export.delay(str(document.id))
+
+        return Response(
+            {
+                "task_id": task.id,
+                "status": "queued",
+                "message": "export task queued for background proccessing .",
+            },
+            status=status.HTTP_202_ACCEPTED
+        )
