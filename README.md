@@ -1,403 +1,504 @@
-# **Collaborative Document Backend API & Asynchronous AI Engine**
+<div align="center">
 
-A strict, production-grade Django backend built with modern asynchronous concurrency (ASGI), LLM token streaming, Celery task distribution, vector similarity support (pgvector), in-memory Redis caching, tiered rate limiting, and static type safety as first-class architectural concerns.
+# Collaborative Document Backend API & Asynchronous AI Engine
 
-## **System Architecture Highlights**
+**A production-grade Django backend built for async concurrency, LLM token streaming, distributed tasks, and type safety.**
 
-Plaintext  
-                                  ┌───────────────────────────────────────────────┐  
-                                  │           Reverse Proxy / Gateway             │  
-                                  │             (e.g., Nginx / ALB)               │  
-                                  └───────┬───────────────────────────────┬───────┘  
-                                          │                               │  
-                HTTP REST (Sync/Cached)   │                               │ Async Event-Stream / NDJSON  
-                                          ▼                               ▼  
-                 ┌─────────────────────────────────────────────────────────────────┐  
-                 │                   Uvicorn (ASGI Application Server)             │  
-                 │ ┌───────────────────────────┐     ┌───────────────────────────┐ │  
-                 │ │     Django REST Layer     │     │  Async LLM Streaming View │ │  
-                 │ │     (CRUD, Auth, RBAC)    │     │      (ai\_views.py)        │ │  
-                 │ └─────────────┬─────────────┘     └─────────────┬─────────────┘ │  
-                 └───────────────┼─────────────────────────────────┼───────────────┘  
-                                 │                                 │ Non-blocking  
-                                 ▼                                 ▼ (Event Loop)  
-                 ┌─────────────────────────────┐     ┌───────────────────────────┐  
-                 │       Redis (In-Memory)     │     │ External AI Model Gateway │  
-                 │  \- Cache-Aside (TTL 300s)   │     │    (OpenAI / Anthropic)   │  
-                 │  \- Sliding-Window Throttles │     └───────────────────────────┘  
-                 │  \- Celery Message Broker    │  
-                 └───────────────┬─────────────┘  
-                                 │  
-                 ┌───────────────┴─────────────┐  
-                 │                             │  
-                 ▼                             ▼  
-  ┌─────────────────────────────┐ ┌───────────────────────────────────────────────┐  
-  │   Celery Distributed Pool   │ │          PostgreSQL 16 \+ pgvector             │  
-  │  (Heavy Exports / CPU Work) │ │   \- Relational Core & Foreign Key Cascades    │  
-  │      (documents/tasks.py)   │ │   \- B-tree Indexes & Composite Constraints    │  
-  └─────────────────────────────┘ │   \- High-Dimensional Vector Embeddings        │  
-                                  └───────────────────────────────────────────────┘
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![Django](https://img.shields.io/badge/Django-5.2-092E20?logo=django&logoColor=white)
+![DRF](https://img.shields.io/badge/DRF-REST-A30000)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
+![Celery](https://img.shields.io/badge/Celery-Workers-37814A?logo=celery&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![mypy](https://img.shields.io/badge/mypy-strict-2A6DB2)
+![ruff](https://img.shields.io/badge/lint-ruff-D7FF64)
 
-* **Modern Asynchronous Concurrency (ASGI)**: Powered by Uvicorn, liberating the runtime from synchronous WSGI thread-starvation constraints during long-lived I/O operations.  
-* **Non-Blocking LLM Token Streaming (ai\_views.py)**: Uses Python asyncio primitives and Django’s StreamingHttpResponse to deliver real-time token chunks via Newline Delimited JSON (NDJSON) with zero thread-blocking overhead.  
-* **Distributed Asynchronous Worker Pipeline (Celery \+ Redis)**: Heavy CPU and slow I/O workloads (e.g., document exports) are offloaded to distributed background workers, returning an immediate 202 Accepted to callers.  
-* **AI-Ready Relational Persistence (pgvector/pgvector:pg16)**: Production PostgreSQL database equipped with native vector similarity search extensions for future-proof RAG pipelines and semantic retrieval.  
-* **Fully Containerized Infrastructure**: Deterministic multi-container topology orchestrating the ASGI backend, Redis broker/cache, and pgvector-enabled database via Docker Compose.  
-* **Object-Level RBAC Enforcement**: Method-level capability checks via IsDocumentCollaborator guaranteeing owner-only deletion and editor-only mutation semantics.  
-* **High-Throughput Redis Cache-Aside**: In-memory caching layer with automatic invalidation hooks on updates and deletes, maintaining constant $O(1)$ query complexity on warm reads.  
-* **Tiered Rate Limiting & Abuse Defense**: Redis-backed sliding-window throttles protecting public auth routes against brute-force attacks and authenticated endpoints against resource exhaustion.  
-* **Zero $N+1$ Query Architecture**: Enforced relational eager loading (select\_related, prefetch\_related) eliminating linear query escalation.  
-* **Strict Static Typing**: Configured with strict mypy (integrating django-stubs and djangorestframework-stubs) to prevent runtime type exceptions.
+</div>
 
-## **Tech Stack**
+---
+
+Built with ASGI concurrency, LLM token streaming, Celery task distribution, vector similarity support (pgvector), in-memory Redis caching, tiered rate limiting, and static type safety as first-class architectural concerns.
+
+## Table of Contents
+
+- [System Architecture Highlights](#system-architecture-highlights)
+- [Tech Stack](#tech-stack)
+- [Relational Domain Model](#relational-domain-model)
+- [Architectural Deep Dives](#architectural-deep-dives)
+  - [1. Async LLM Streaming](#1-asynchronous-llm-streaming-architecture-ai_viewspy)
+  - [2. Distributed Task Queue](#2-distributed-task-queue--decoupled-workers-documentstaskspy)
+  - [3. Containerized Topology](#3-containerized-topology-docker--compose)
+  - [4. Caching (Cache-Aside)](#4-high-performance-caching--cache-aside-architecture)
+  - [5. Query Optimization](#5-performance--query-optimization-o1-constant-queries)
+- [Tiered Rate Limiting](#tiered-rate-limiting--abuse-prevention-rate-502)
+- [RBAC Matrix](#role-based-access-control-rbac-matrix)
+- [API Endpoints Reference](#api-endpoints-reference)
+- [Getting Started](#getting-started)
+- [Quality Gates](#quality-gates--verification)
+- [Engineering Sprint Changelog](#engineering-sprint-changelog)
+
+---
+
+## System Architecture Highlights
+
+```text
+                        ┌───────────────────────────────────────────────┐
+                        │            Reverse Proxy / Gateway            │
+                        │              (e.g., Nginx / ALB)              │
+                        └───────┬───────────────────────────────┬───────┘
+                                │                               │
+      HTTP REST (Sync/Cached)   │                               │   Async Event-Stream / NDJSON
+                                ▼                               ▼
+        ┌─────────────────────────────────────────────────────────────────┐
+        │                Uvicorn (ASGI Application Server)                │
+        │ ┌───────────────────────────┐   ┌───────────────────────────┐   │
+        │ │     Django REST Layer     │   │ Async LLM Streaming View  │   │
+        │ │    (CRUD, Auth, RBAC)     │   │      (ai_views.py)        │   │
+        │ └─────────────┬─────────────┘   └─────────────┬─────────────┘   │
+        └───────────────┼───────────────────────────────┼─────────────────┘
+                        │                               │ Non-blocking
+                        ▼                               ▼ (Event Loop)
+        ┌─────────────────────────────┐   ┌───────────────────────────┐
+        │      Redis (In-Memory)      │   │ External AI Model Gateway │
+        │  - Cache-Aside (TTL 300s)   │   │   (OpenAI / Anthropic)    │
+        │  - Sliding-Window Throttles │   └───────────────────────────┘
+        │  - Celery Message Broker    │
+        └───────────────┬─────────────┘
+                        │
+          ┌─────────────┴─────────────┐
+          │                           │
+          ▼                           ▼
+┌─────────────────────────────┐ ┌───────────────────────────────────────────┐
+│   Celery Distributed Pool   │ │          PostgreSQL 16 + pgvector         │
+│  (Heavy Exports / CPU Work) │ │  - Relational Core & FK Cascades          │
+│     (documents/tasks.py)    │ │  - B-tree Indexes & Composite Constraints │
+└─────────────────────────────┘ │  - High-Dimensional Vector Embeddings     │
+                                └───────────────────────────────────────────┘
+```
+
+| Feature | Description |
+| :-- | :-- |
+| ⚡ **Modern Async Concurrency (ASGI)** | Powered by Uvicorn, freeing the runtime from synchronous WSGI thread-starvation during long-lived I/O. |
+| 🌊 **Non-Blocking LLM Token Streaming** | `ai_views.py` uses Python `asyncio` and Django's `StreamingHttpResponse` to deliver real-time token chunks via Newline Delimited JSON (NDJSON) with zero thread-blocking overhead. |
+| 🧵 **Distributed Worker Pipeline** | Heavy CPU and slow I/O workloads (e.g., document exports) are offloaded to Celery + Redis workers, returning an immediate `202 Accepted`. |
+| 🧠 **AI-Ready Persistence** | PostgreSQL (`pgvector/pgvector:pg16`) with native vector similarity search for future-proof RAG pipelines and semantic retrieval. |
+| 🐳 **Fully Containerized** | Deterministic multi-container topology orchestrating the ASGI backend, Redis broker/cache, and pgvector database via Docker Compose. |
+| 🔐 **Object-Level RBAC** | `IsDocumentCollaborator` guarantees owner-only deletion and editor-only mutation semantics. |
+| 🚀 **Redis Cache-Aside** | Automatic invalidation hooks on updates and deletes, keeping warm reads at constant `O(1)` query complexity. |
+| 🛡️ **Tiered Rate Limiting** | Redis-backed sliding-window throttles protect public auth routes from brute force and authenticated endpoints from resource exhaustion. |
+| 🎯 **Zero N+1 Queries** | Enforced eager loading (`select_related`, `prefetch_related`) eliminates linear query escalation. |
+| ✅ **Strict Static Typing** | Strict `mypy` (with `django-stubs` and `djangorestframework-stubs`) prevents runtime type exceptions. |
+
+---
+
+## Tech Stack
 
 | Domain | Technology | Operational Purpose |
-| :---- | :---- | :---- |
-| **Runtime & Framework** | Python 3.13, Django 5.2, DRF | High-productivity backend framework with strict relational ORM |
-| **Application Server** | Uvicorn (ASGI) | Single-threaded non-blocking event-loop for concurrent I/O & streaming |
-| **Database & Vector Engine** | PostgreSQL 16 \+ pgvector | Relational consistency (ACID) paired with high-dimensional vector search |
-| **In-Memory Broker & Cache** | Redis 7 (Alpine) | Sub-millisecond cache-aside storage, Celery task queue, and sliding throttles |
+| :-- | :-- | :-- |
+| **Runtime & Framework** | Python 3.13, Django 5.2, DRF | High-productivity backend framework with a strict relational ORM |
+| **Application Server** | Uvicorn (ASGI) | Non-blocking event loop for concurrent I/O and streaming |
+| **Database & Vector Engine** | PostgreSQL 16 + pgvector | ACID relational consistency paired with high-dimensional vector search |
+| **In-Memory Broker & Cache** | Redis 7 (Alpine) | Sub-millisecond cache-aside storage, Celery queue, and sliding throttles |
 | **Task Queue** | Celery | Distributed background job processing for non-blocking exports |
 | **Containerization** | Docker, Docker Compose | Reproducible environments across development and production |
-| **Testing Harness** | pytest, pytest-django, factory\_boy | Automated integration testing, mock factories, and query budget assertions |
-| **Code Quality** | mypy (strict), ruff | Compile-time type verification and ultra-fast code styling |
+| **Testing Harness** | pytest, pytest-django, factory_boy | Integration testing, mock factories, and query budget assertions |
+| **Code Quality** | mypy (strict), ruff | Compile-time type verification and fast linting/formatting |
 
-## **Architecture & Relational Domain Model**
+---
 
-### **Entity-Relationship Diagram**
+## Relational Domain Model
 
-Plaintext  
-\+------------------------------------+  
-|             CustomUser             |  
-\+------------------------------------+  
-| id          : UUID (PK)            |  
-| email       : EmailField (Unique)  |  
-| is\_active   : BooleanField         |  
-| date\_joined : DateTimeField        |  
-\+------------------------------------+  
-         │ 1                      │ 1  
-         │ (owner)                │ (member)  
-         │ N                      │ N  
-         ▼                        ▼  
-\+-----------------------+        \+-----------------------------------+  
-|       Document        |        |          DocumentMember           |  
-\+-----------------------+        \+-----------------------------------+  
-| id         : UUID (PK)|        | id          : UUID (PK)           |  
-| title      : CharField|◄───────┤ document\_id : FK \-\> Document      |  
-| content    : TextField| 1      | user\_id     : FK \-\> CustomUser    |  
-| owner\_id   : FK \-\> User        | role        : Enum(viewer, editor)|  
-| created\_at : DateTime │        | created\_at  : DateTime            |  
-| updated\_at : DateTime │        \+-----------------------------------+  
-\+-----------------------+               Constraint: UNIQUE(doc, user)
+### Entity-Relationship Diagram
 
-### **Relational Design Decisions**
+```mermaid
+erDiagram
+    CUSTOMUSER ||--o{ DOCUMENT : "owns"
+    CUSTOMUSER ||--o{ DOCUMENTMEMBER : "is member"
+    DOCUMENT   ||--o{ DOCUMENTMEMBER : "has"
 
-> 1. **Foreign Key Cascade Lifecycles (on\_delete=models.CASCADE)**:  
-   * Deleting an **owner** cascades to purge all their authored Document records.  
-   * Deleting a **collaborator user** cleans up their membership record (DocumentMember) without deleting or corrupting the shared Document.  
-   * Deleting a **document** automatically cleans up all child DocumentMember entries, preventing orphaned ACL records.  
-> 2. **Compound Unique Constraints**:  
-   * Enforced at the database engine level via models.UniqueConstraint(fields=\["document", "user"\], name="unique\_document\_member") to prevent race conditions during permission assignment.  
-> 3. **Indexing Strategy**:  
-   * Dedicated B-tree indexes on owner\_id, created\_at, and title to accelerate WHERE filtering and ordered pagination scans (ORDER BY created\_at DESC).
+    CUSTOMUSER {
+        UUID id PK
+        string email UK
+        boolean is_active
+        datetime date_joined
+    }
+    DOCUMENT {
+        UUID id PK
+        string title
+        text content
+        UUID owner_id FK
+        datetime created_at
+        datetime updated_at
+    }
+    DOCUMENTMEMBER {
+        UUID id PK
+        UUID document_id FK
+        UUID user_id FK
+        enum role "viewer | editor"
+        datetime created_at
+    }
+```
 
-## **Architectural Deep Dives**
+> **Constraint:** `UNIQUE(document, user)` on `DocumentMember`.
 
-### **1\. Asynchronous LLM Streaming Architecture (ai\_views.py)**
+### Relational Design Decisions
 
-Traditional WSGI servers dedicate one operating system worker thread per HTTP request. When an endpoint interacts with a generative AI provider taking 3 to 10 seconds to generate completions, WSGI threads remain completely idle waiting for network packets—causing rapid thread starvation, latency spikes, and socket timeouts under minimal concurrent load.  
-To resolve this, core/ai\_views.py establishes an asynchronous streaming pipeline:
+**1. Foreign Key cascade lifecycles** (`on_delete=models.CASCADE`)
 
-Python  
-class DocumentAiStreamView(APIView):  
-    permission\_classes \= \[IsAuthenticated\]
+- Deleting an **owner** cascades to purge all their authored `Document` records.
+- Deleting a **collaborator user** removes their `DocumentMember` record without touching the shared `Document`.
+- Deleting a **document** cleans up all child `DocumentMember` entries, preventing orphaned ACL records.
 
-    async def get(self, request: Request) \-\> StreamingHttpResponse:  
-        prompt \= request.query\_params.get("q", "Summarize document")
+**2. Compound unique constraints**
 
-        async def response\_stream() \-\> AsyncGenerator\[str, None\]:  
-            async for token in MockAiStreamService.stream\_tokens(prompt):  
+- Enforced at the database level via `models.UniqueConstraint(fields=["document", "user"], name="unique_document_member")` to prevent race conditions during permission assignment.
+
+**3. Indexing strategy**
+
+- Dedicated B-tree indexes on `owner_id`, `created_at`, and `title` to accelerate `WHERE` filtering and ordered pagination scans (`ORDER BY created_at DESC`).
+
+---
+
+## Architectural Deep Dives
+
+### 1. Asynchronous LLM Streaming Architecture (`ai_views.py`)
+
+Traditional WSGI servers dedicate one OS worker thread per HTTP request. When an endpoint calls a generative AI provider that takes 3 to 10 seconds to respond, those threads sit idle waiting for network packets, causing thread starvation, latency spikes, and socket timeouts under minimal concurrent load.
+
+`core/ai_views.py` solves this with an asynchronous streaming pipeline:
+
+```python
+class DocumentAiStreamView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    async def get(self, request: Request) -> StreamingHttpResponse:
+        prompt = request.query_params.get("q", "Summarize document")
+
+        async def response_stream() -> AsyncGenerator[str, None]:
+            async for token in MockAiStreamService.stream_tokens(prompt):
                 yield token
 
-        response \= StreamingHttpResponse(  
-            response\_stream(),  
-            content\_type="application/x-ndjson",  
-        )  
-        response\["Cache-Control"\] \= "no-cache"  
-        response\["X-Accel-Buffering"\] \= "no"  
+        response = StreamingHttpResponse(
+            response_stream(),
+            content_type="application/x-ndjson",
+        )
+        response["Cache-Control"] = "no-cache"
+        response["X-Accel-Buffering"] = "no"
         return response
+```
 
-#### **Key Engineering Decisions**
+**Key engineering decisions**
 
-* **Non-Blocking Cooperative Scheduling**: Downstream calls yield execution via await asyncio.sleep(). While waiting on upstream model tokens, the single worker process continues handling other concurrent requests on the event loop.  
-* **Transfer Protocol**: Employs **HTTP Chunked Transfer Encoding** returning Newline Delimited JSON (application/x-ndjson). This allows clients to stream, parse, and render markdown tokens dynamically.  
-* **Reverse-Proxy Buffer Bypass (X-Accel-Buffering: no)**: Nginx and edge CDNs buffer responses in 4KB/8KB chunks by default. Setting this header explicitly forces proxies to flush individual token packets to the client immediately, preserving the typewriter UI effect.
+- **Non-blocking cooperative scheduling:** Downstream calls yield execution via `await asyncio.sleep()`. While waiting on upstream model tokens, the single worker process keeps serving other requests on the event loop.
+- **Transfer protocol:** HTTP Chunked Transfer Encoding returning Newline Delimited JSON (`application/x-ndjson`), so clients can stream, parse, and render markdown tokens dynamically.
+- **Reverse-proxy buffer bypass (`X-Accel-Buffering: no`):** Nginx and edge CDNs buffer responses in 4KB/8KB chunks by default. This header forces proxies to flush each token packet immediately, preserving the typewriter UI effect.
 
-### **2\. Distributed Task Queue & Decoupled Workers (documents/tasks.py)**
+### 2. Distributed Task Queue & Decoupled Workers (`documents/tasks.py`)
 
-Workloads involving disk writes, report compilation, or PDF generation must never run inside the web application's synchronous request-response loop.
+Workloads involving disk writes, report compilation, or PDF generation must never run inside the synchronous request-response loop.
 
-Python  
-@shared\_task(bind=True, max\_retries=3)  \# type: ignore\[misc\]  
-def process\_document\_export(  
-    self: Any,  
-    document\_id: str,  
-) \-\> dict\[str, str\]:  
-    """Simulate heavy background export generation for a document."""  
-    try:  
-        doc \= Document.objects.get(id\=document\_id)  
-        logger.info(  
-            "document\_export\_started",  
-            extra={"document": str(doc.id), "document\_title": doc.title},  
-        )  
-        time.sleep(3)  \# Heavy file compilation workload  
-        return {  
-            "status": "completed",  
-            "document\_id": str(doc.id),  
-            "export\_url": f"https\://storage.cdn.company.internal/exports/{doc.id}.pdf",  
-        }  
-    except Document.DoesNotExist as exc:  
-        logger.error("document\_not\_found", extra={"document\_id": document\_id})  
+```python
+@shared_task(bind=True, max_retries=3)  # type: ignore[misc]
+def process_document_export(
+    self: Any,
+    document_id: str,
+) -> dict[str, str]:
+    """Simulate heavy background export generation for a document."""
+    try:
+        doc = Document.objects.get(id=document_id)
+        logger.info(
+            "document_export_started",
+            extra={"document": str(doc.id), "document_title": doc.title},
+        )
+        time.sleep(3)  # Heavy file compilation workload
+        return {
+            "status": "completed",
+            "document_id": str(doc.id),
+            "export_url": f"https://storage.cdn.company.internal/exports/{doc.id}.pdf",
+        }
+    except Document.DoesNotExist as exc:
+        logger.error("document_not_found", extra={"document_id": document_id})
         raise exc
+```
 
-* **Asynchronous Offloading**: The API endpoint enqueues the task onto Redis and immediately dispatches an HTTP 202 Accepted response with a task reference, keeping API p99 latency minimal.  
-* **Separation of Concerns**: CPU-bound tasks use standard worker threads (time.sleep) in an isolated Celery pool, completely segregated from the event loop of the Uvicorn ASGI server.
+- **Asynchronous offloading:** The API enqueues the task onto Redis and immediately returns `202 Accepted` with a task reference, keeping p99 latency minimal.
+- **Separation of concerns:** CPU-bound tasks run on standard worker threads in an isolated Celery pool, fully segregated from the Uvicorn event loop.
 
-### **3\. Containerized Topology (Docker & Compose)**
+### 3. Containerized Topology (Docker & Compose)
 
-The backend runs as an orchestrated set of containers configured to mirror production network topologies:
+The backend runs as an orchestrated set of containers that mirror production network topology:
 
-Plaintext  
-\[ Docker Network: django\_backend\_default \]  
- ├── web      (python:3.13-slim \+ Uvicorn ASGI, ports: 8000:8000)  
- ├── redis    (redis:7-alpine, ports: 6379:6379)  
- └── db       (pgvector/pgvector:pg16, ports: 5432:5432)
+```text
+[ Docker Network: django_backend_default ]
+ ├── web      (python:3.13-slim + Uvicorn ASGI, ports: 8000:8000)
+ ├── redis    (redis:7-alpine,                  ports: 6379:6379)
+ └── db       (pgvector/pgvector:pg16,          ports: 5432:5432)
+```
 
-* **Database Engine**: Uses the official pgvector/pgvector:pg16 image, enabling Postgres extension provisioning (CREATE EXTENSION IF NOT EXISTS vector;) for semantic embedding search.  
-* **Deterministic Startup Orchestration**: Uses Compose health checks (pg\_isready \-U postgres) and service dependency conditions (condition: service\_healthy) to ensure the Django backend never attempts migrations or server starts until PostgreSQL and Redis have passed readiness probes.  
-* **Production Build Hygiene**: Multi-stage layer caching ensures that system dependencies (libpq-dev, build-essential) and Python requirements are compiled before source code ingestion, minimizing container build duration.
+- **Database engine:** The official `pgvector/pgvector:pg16` image enables extension provisioning (`CREATE EXTENSION IF NOT EXISTS vector;`) for semantic embedding search.
+- **Deterministic startup:** Compose health checks (`pg_isready -U postgres`) and `condition: service_healthy` ensure Django never runs migrations or starts serving until PostgreSQL and Redis pass readiness probes.
+- **Production build hygiene:** Multi-stage layer caching compiles system dependencies (`libpq-dev`, `build-essential`) and Python requirements before source ingestion, minimizing build time.
 
-### **4\. High-Performance Caching & Cache-Aside Architecture**
+### 4. High-Performance Caching & Cache-Aside Architecture
 
-High-throughput read endpoints that mutate rarely (GET /api/documents/{id}/) are decoupled from direct PostgreSQL execution using an **in-memory Cache-Aside (Lazy Loading)** design pattern.
+Read-heavy endpoints that rarely mutate (`GET /api/documents/{id}/`) are decoupled from direct PostgreSQL execution using an in-memory **Cache-Aside (Lazy Loading)** pattern.
 
-Plaintext  
-GET /api/documents/{id}/  
-     │  
-     ▼  
-\[ Check Cache (Key: "doc:{id}") \]  
-     │  
-     ├── HIT  ──► Return cached JSON directly (0 SQL queries executed)  
-     │  
-     └── MISS ──► 1\. Query PostgreSQL via ORM (enforcing RBAC permission checks)  
-                  2\. Serialize payload  
-                  3\. Store in Redis (TTL: 300s)  
-                  4\. Return JSON response
+```text
+GET /api/documents/{id}/
+     │
+     ▼
+[ Check Cache (Key: "doc:{id}") ]
+     │
+     ├── HIT  ──► Return cached JSON directly (0 SQL queries executed)
+     │
+     └── MISS ──► 1. Query PostgreSQL via ORM (enforcing RBAC permission checks)
+                  2. Serialize payload
+                  3. Store in Redis (TTL: 300s)
+                  4. Return JSON response
 
-PATCH / PUT / DELETE /api/documents/{id}/  
-     │  
-     ▼  
-1\. Mutate / Delete record in PostgreSQL  
-2\. Evict / Invalidate cache key: cache.delete(f"doc:{id}")
+PATCH / PUT / DELETE /api/documents/{id}/
+     │
+     ▼
+1. Mutate / delete record in PostgreSQL
+2. Evict cache key: cache.delete(f"doc:{id}")
+```
 
-#### **Invalidation Policy & Fault Tolerance**
+**Invalidation policy & fault tolerance**
 
-* **Deterministic Cache Keys**: Formatted as doc:{id} to establish discrete namespace boundaries.  
-* **Proactive Invalidation**: Handled in view lifecycle hooks (perform\_update and perform\_destroy), guaranteeing that stale representations never outlive a write transaction.  
-* **Fail-Open Resilience**: Configured with IGNORE\_EXCEPTIONS \= True and strict connection timeouts (5s). If the Redis cluster encounters downtime, the backend automatically falls back to direct database execution rather than dropping user requests.  
-* **Isolated Testing Environment**: During pytest sessions, cache backend cleanly routes to Django's in-memory LocMemCache, eliminating network dependencies while validating eviction behavior.
+- **Deterministic cache keys:** Formatted as `doc:{id}` to establish discrete namespace boundaries.
+- **Proactive invalidation:** Handled in view lifecycle hooks (`perform_update`, `perform_destroy`), so stale representations never outlive a write transaction.
+- **Fail-open resilience:** Configured with `IGNORE_EXCEPTIONS = True` and strict connection timeouts (5s). If Redis goes down, the backend falls back to direct database execution instead of dropping requests.
+- **Isolated testing:** During pytest sessions, the cache backend routes to Django's in-memory `LocMemCache`, removing network dependencies while still validating eviction behavior.
 
-### **5\. Performance & Query Optimization ($O(1)$ Constant Queries)**
+### 5. Performance & Query Optimization (`O(1)` Constant Queries)
 
-When serializing relational models with nested representations, naïve ORM queries trigger the $N+1$ **query problem**, firing 1 initial query for the list and $N$ individual queries for each related foreign key:
+When serializing relational models with nested representations, naïve ORM access triggers the **N+1 query problem**: 1 initial query for the list plus N queries for each related foreign key.
 
-SQL  
-\-- Naïve execution without eager loading (fetching 10 documents with 2 members each):  
-SELECT \* FROM documents;                     \-- 1 query  
-SELECT \* FROM users WHERE id \= ...;          \-- 10 queries (one per owner)  
-SELECT \* FROM document\_members WHERE ...;    \-- 10 queries (one per document)  
-SELECT \* FROM users WHERE id IN (...);       \-- 10 queries (nested member users)  
-\-- Total: 31+ queries (scales linearly with result size)
+```sql
+-- Naïve execution without eager loading (10 documents, 2 members each):
+SELECT * FROM documents;                     -- 1 query
+SELECT * FROM users WHERE id = ...;          -- 10 queries (one per owner)
+SELECT * FROM document_members WHERE ...;    -- 10 queries (one per document)
+SELECT * FROM users WHERE id IN (...);       -- 10 queries (nested member users)
+-- Total: 31+ queries (scales linearly with result size)
+```
 
-#### **Eager Loading Strategy**
+**Eager loading strategy**
 
-To eliminate linear query amplification and preserve low latency under concurrent traffic, DocumentViewSet.get\_queryset() enforces explicit eager loading:
+`DocumentViewSet.get_queryset()` enforces explicit eager loading:
 
-Python  
-Document.objects.filter(  
-    Q(owner=user) | Q(memberships\_\_user=user)  
-).distinct().select\_related(  
-    "owner"  
-).prefetch\_related(  
-    "memberships\_\_user"  
+```python
+Document.objects.filter(
+    Q(owner=user) | Q(memberships__user=user)
+).distinct().select_related(
+    "owner"
+).prefetch_related(
+    "memberships__user"
 )
+```
 
-* **select\_related("owner")**: Performs an SQL INNER JOIN in the primary query to retrieve author data in a single roundtrip.  
-* **prefetch\_related("memberships\_\_user")**: Uses batched SQL WHERE id IN (...) queries to load all memberships and nested user representations in 1 additional query.
+- **`select_related("owner")`:** Performs a SQL join in the primary query to fetch author data in a single round trip.
+- **`prefetch_related("memberships__user")`:** Uses batched `WHERE id IN (...)` queries to load all memberships and nested users in one additional query.
 
-**Result**: Total database queries remain strictly **constant ($O(1)$)** regardless of whether the endpoint returns 10 or 1,000 documents.
+> **Result:** Total database queries stay strictly constant (`O(1)`) whether the endpoint returns 10 or 1,000 documents.
 
-## **Tiered Rate Limiting & Abuse Prevention (RATE-502)**
+---
 
-Public APIs face asymmetric threats: expensive compute operations (like cryptographic password hashing) can be abused to cause Denial-of-Service (DoS) and credential stuffing. The system implements a **tiered throttling topology** backed by atomic Redis operations:
+## Tiered Rate Limiting & Abuse Prevention (RATE-502)
 
-Plaintext  
-Incoming HTTP Request  
-         │  
-         ▼  
-\[ Throttling Gateway \]  
-         │  
-         ├── Unauthenticated (/api/auth/\*) ──► ScopedRateThrottle ("auth\_anon")  
-         │                                      Key: throttle\_anon\_\<client\_ip\>  
-         │                                      Limit: 5 requests / minute  
-         │  
-         └── Authenticated (/api/documents/\*) ─► UserRateThrottle  
-                                                 Key: throttle\_user\_\<user\_id\>  
+Public APIs face asymmetric threats: expensive compute operations (like cryptographic password hashing) can be abused for Denial-of-Service (DoS) and credential stuffing. The system implements a **tiered throttling topology** backed by atomic Redis operations:
+
+```text
+Incoming HTTP Request
+         │
+         ▼
+[ Throttling Gateway ]
+         │
+         ├── Unauthenticated (/api/auth/*) ──► ScopedRateThrottle ("auth_anon")
+         │                                     Key:   throttle_anon_<client_ip>
+         │                                     Limit: 5 requests / minute
+         │
+         └── Authenticated (/api/documents/*) ─► UserRateThrottle
+                                                 Key:   throttle_user_<user_id>
                                                  Limit: 60 requests / minute
+```
 
-### **Throttling Policy Matrix**
+### Throttling Policy Matrix
 
 | Scope / Class | Target Endpoints | Tracking Key | Rate Limit | Threat Mitigated |
-| :---- | :---- | :---- | :---- | :---- |
-| **ScopedRateThrottle** (auth\_anon) | /api/auth/register/, /api/auth/token/  | Client IP Address (throttle\_anon\_\<ip\>) | **5 req / minute**  | Credential stuffing, brute-force password guessing, PBKDF2 CPU starvation |
-| **UserRateThrottle** | /api/documents/\*  | Authenticated user.pk (throttle\_user\_\<id\>) | **60 req / minute**  | Resource starvation, scraper bots; prevents NAT gateway IP collisions across shared subnets |
-| **AnonRateThrottle** | Global unauthenticated endpoints | Client IP Address (throttle\_anon\_\<ip\>) | **30 req / minute**  | Broad automated scraping and endpoint scanning |
+| :-- | :-- | :-- | :-- | :-- |
+| **ScopedRateThrottle** (`auth_anon`) | `/api/auth/register/`, `/api/auth/token/` | Client IP (`throttle_anon_<ip>`) | **5 req / min** | Credential stuffing, brute-force guessing, PBKDF2 CPU starvation |
+| **UserRateThrottle** | `/api/documents/*` | User PK (`throttle_user_<id>`) | **60 req / min** | Resource starvation, scraper bots; prevents NAT gateway IP collisions on shared subnets |
+| **AnonRateThrottle** | Global unauthenticated endpoints | Client IP (`throttle_anon_<ip>`) | **30 req / min** | Broad automated scraping and endpoint scanning |
 
-* **Zero-Compute Interception**: When a client exceeds their quota, DRF intercepts the request before view logic or database execution, instantly returning **429 Too Many Requests** along with a standard error envelope and a Retry-After header. Abusive traffic costs **0 SQL queries**.
+> **Zero-compute interception:** When a client exceeds quota, DRF intercepts the request before view logic or database execution and returns **`429 Too Many Requests`** with a standard error envelope and a `Retry-After` header. Abusive traffic costs **0 SQL queries**.
 
-## **Role-Based Access Control (RBAC) Matrix**
+---
 
-Object-level access validation handled by IsDocumentCollaborator:
+## Role-Based Access Control (RBAC) Matrix
 
-| Operation | HTTP Method | Route | Owner | Editor | Viewer | Unauthorized / Anon |
-| :---- | :---- | :---- | :---- | :---- | :---- | :---- |
-| **List Documents** | GET | /api/documents/ | Allowed | Allowed | Allowed | 401 Unauthorized |
-| **Create Document** | POST | /api/documents/ | Allowed | Allowed | Allowed | 401 Unauthorized |
-| **Retrieve Document** | GET | /api/documents/\<id\>/ | Allowed | Allowed | Allowed | 404 Not Found  |
-| **Update Document** | PUT, PATCH  | /api/documents/\<id\>/ | Allowed | Allowed | 403 Forbidden  | 404 Not Found  |
-| **Delete Document** | DELETE  | /api/documents/\<id\>/ | Allowed | 403 Forbidden  | 403 Forbidden  | 404 Not Found  |
-| **Manage Members** | POST  | /api/documents/\<id\>/members/ | Allowed | 403 Forbidden  | 403 Forbidden  | 404 Not Found  |
-| **Enqueue Export** | POST | /api/documents/\<id\>/export/ | Allowed | Allowed | 403 Forbidden | 404 Not Found |
+Object-level access validation is handled by `IsDocumentCollaborator`:
 
-*Security Note: Unauthorized queries on existing documents return 404 Not Found rather than 403 Forbidden through strict get\_queryset filtering, mitigating IDOR identification and object-enumeration attacks.*
+| Operation | Method | Route | Owner | Editor | Viewer | Unauthorized / Anon |
+| :-- | :-- | :-- | :-: | :-: | :-: | :-: |
+| **List Documents** | `GET` | `/api/documents/` | ✅ | ✅ | ✅ | `401` |
+| **Create Document** | `POST` | `/api/documents/` | ✅ | ✅ | ✅ | `401` |
+| **Retrieve Document** | `GET` | `/api/documents/<id>/` | ✅ | ✅ | ✅ | `404` |
+| **Update Document** | `PUT`, `PATCH` | `/api/documents/<id>/` | ✅ | ✅ | `403` | `404` |
+| **Delete Document** | `DELETE` | `/api/documents/<id>/` | ✅ | `403` | `403` | `404` |
+| **Manage Members** | `POST` | `/api/documents/<id>/members/` | ✅ | `403` | `403` | `404` |
+| **Enqueue Export** | `POST` | `/api/documents/<id>/export/` | ✅ | ✅ | `403` | `404` |
 
-## **API Endpoints Reference**
+> 🔒 **Security note:** Unauthorized queries on existing documents return `404 Not Found` rather than `403 Forbidden` through strict `get_queryset` filtering, mitigating IDOR identification and object-enumeration attacks.
 
-All routes require a trailing slash (/). Unless noted, all endpoints expect Authorization: Bearer \<access\_token\>.
+---
 
-### **Authentication & Account Identity**
+## API Endpoints Reference
+
+All routes require a trailing slash (`/`). Unless noted, endpoints expect `Authorization: Bearer <access_token>`.
+
+### Authentication & Account Identity
 
 | Method | Endpoint | Description | Rate Limit |
-| :---- | :---- | :---- | :---- |
-| POST | /api/auth/register/  | Register user account | 5 req / min (IP-scoped) |
-| POST | /api/auth/token/  | Issue access and refresh JWT pair | 5 req / min (IP-scoped) |
-| POST | /api/auth/token/refresh/  | Refresh expired access token | 30 req / min |
-| GET | /api/users/me/  | Fetch authenticated profile details | 60 req / min |
+| :-- | :-- | :-- | :-- |
+| `POST` | `/api/auth/register/` | Register user account | 5 req / min (IP-scoped) |
+| `POST` | `/api/auth/token/` | Issue access and refresh JWT pair | 5 req / min (IP-scoped) |
+| `POST` | `/api/auth/token/refresh/` | Refresh expired access token | 30 req / min |
+| `GET` | `/api/users/me/` | Fetch authenticated profile details | 60 req / min |
 
-### **Collaborative Documents**
+### Collaborative Documents
 
-| Method | Endpoint | Description | Response Status |
-| :---- | :---- | :---- | :---- |
-| GET | /api/documents/  | Paginated document listing ($O(1)$ eager-loaded) | 200 OK |
-| POST | /api/documents/  | Create document (binds request.user server-side) | 201 Created |
-| GET | /api/documents/\<uuid:id\>/  | Retrieve document (Cache-Aside enabled) | 200 OK |
-| PATCH | /api/documents/\<uuid:id\>/  | Partially update title/content (evicts cache) | 200 OK |
-| DELETE | /api/documents/\<uuid:id\>/  | Delete document (evicts cache, cascade clean) | 204 No Content |
-| POST | /api/documents/\<uuid:id\>/members/  | Assign/update member role (viewer/editor) | 200 OK |
-| POST | /api/documents/\<uuid:id\>/export/ | Enqueue background document export | 202 Accepted |
+| Method | Endpoint | Description | Status |
+| :-- | :-- | :-- | :-- |
+| `GET` | `/api/documents/` | Paginated document listing (`O(1)` eager-loaded) | `200 OK` |
+| `POST` | `/api/documents/` | Create document (binds `request.user` server-side) | `201 Created` |
+| `GET` | `/api/documents/<uuid:id>/` | Retrieve document (Cache-Aside enabled) | `200 OK` |
+| `PATCH` | `/api/documents/<uuid:id>/` | Partially update title/content (evicts cache) | `200 OK` |
+| `DELETE` | `/api/documents/<uuid:id>/` | Delete document (evicts cache, cascade clean) | `204 No Content` |
+| `POST` | `/api/documents/<uuid:id>/members/` | Assign/update member role (viewer/editor) | `200 OK` |
+| `POST` | `/api/documents/<uuid:id>/export/` | Enqueue background document export | `202 Accepted` |
 
-### **Asynchronous AI Streaming**
+### Asynchronous AI Streaming
 
 | Method | Endpoint | Description | Protocol / Format |
-| :---- | :---- | :---- | :---- |
-| GET | /api/ai/stream/?q=\<prompt\> | Non-blocking token generation stream | application/x-ndjson (Chunked) |
+| :-- | :-- | :-- | :-- |
+| `GET` | `/api/ai/stream/?q=<prompt>` | Non-blocking token generation stream | `application/x-ndjson` (chunked) |
 
-## **Getting Started**
+---
 
-### **Prerequisites**
+## Getting Started
 
-* Docker Desktop (with WSL2 integration enabled on Windows)  
-* Python 3.13 (for local toolchains)  
-* Git
+### Prerequisites
 
-### **Local Containerized Setup (Recommended)**
+- Docker Desktop (with WSL2 integration enabled on Windows)
+- Python 3.13 (for local toolchains)
+- Git
 
-> 1. **Clone and Configure Environment**:  
->    Bash  
->    git clone \<repository\_url\> django\_backend  
->    cd django\_backend  
->    cp .env.example .env
+### Local Containerized Setup (Recommended)
 
-> 2. **Launch Container Ecosystem**:  
->    Bash  
->    docker compose up \--build \-d
+**1. Clone and configure the environment**
 
-> 3. **Verify Service Health**:  
->    Bash  
->    docker compose ps
+```bash
+git clone <repository_url> django_backend
+cd django_backend
+cp .env.example .env
+```
 
-> 4. **Run Database Migrations Inside Container**:  
->    Bash  
->    docker compose exec web python manage.py migrate
+**2. Launch the container ecosystem**
 
-> 5. **Execute Automated Quality Gates Inside Container**:  
->    Bash  
->    docker compose exec web pytest
+```bash
+docker compose up --build -d
+```
 
-The application is now accessible at http\://localhost:8000.
+**3. Verify service health**
 
-### **Native Local Development (Without Docker)**
+```bash
+docker compose ps
+```
 
-> 1. **Environment Setup**:  
->    Bash  
->    python \-m venv .venv  
->    source .venv/bin/activate  \# On Windows: .venv\\Scripts\\activate  
->    pip install \--upgrade pip  
->    pip install \-r requirements.txt
+**4. Run database migrations inside the container**
 
-> 2. **Environment Variables**:  
->    Create a .env file in the root directory:  
->    Code snippet  
->    SECRET\_KEY=local-dev-insecure-secret-key-32-chars-min  
->    DEBUG=True  
->    DATABASE\_URL=postgres://postgres:postgres@localhost:5432/django\_db  
->    REDIS\_URL=redis://localhost:6379/0  
->    CELERY\_BROKER\_URL=redis://localhost:6379/0  
->    CELERY\_RESULT\_BACKEND=redis://localhost:6379/0
+```bash
+docker compose exec web python manage.py migrate
+```
 
-> 3. **Start the ASGI Server**:  
->    Bash  
->    uvicorn config.asgi:application \--host 127.0.0.1 \--port 8000 \--reload
+**5. Execute automated quality gates inside the container**
 
-> 4. **Launch Background Celery Worker** (in a separate terminal):  
->    Bash  
->    celery \-A config worker \--loglevel=info
+```bash
+docker compose exec web pytest
+```
 
-## **Quality Gates & Verification**
+The application is now accessible at <http://localhost:8000>.
 
-Every pull request must pass the static type safety, linting, and automated testing suites:
+### Native Local Development (Without Docker)
 
-Bash  
-\# 1\. Static Type Checking (Strict Mypy)  
+**1. Environment setup**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+**2. Environment variables**
+
+Create a `.env` file in the project root:
+
+```dotenv
+SECRET_KEY=local-dev-insecure-secret-key-32-chars-min
+DEBUG=True
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/django_db
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+```
+
+**3. Start the ASGI server**
+
+```bash
+uvicorn config.asgi:application --host 127.0.0.1 --port 8000 --reload
+```
+
+**4. Launch the Celery worker** (in a separate terminal)
+
+```bash
+celery -A config worker --loglevel=info
+```
+
+---
+
+## Quality Gates & Verification
+
+Every pull request must pass the static type, linting, and automated testing suites:
+
+```bash
+# 1. Static type checking (strict mypy)
 mypy core config documents
 
-\# 2\. Fast Lint & Import Verification  
+# 2. Fast lint & import verification
 ruff check .
 
-\# 3\. Test Suite (RBAC, Cache Eviction, Celery Tasks, Query Limits)  
+# 3. Test suite (RBAC, cache eviction, Celery tasks, query limits)
 pytest
+```
 
-## **Engineering Sprint Changelog**
+---
 
-* **AUTH-201**: Custom User Model with UUID Primary Key, PostgreSQL Integration, and Zero Schema Drift.  
-* **AUTH-202**: User Registration Endpoint with Serializer Validation & Transaction Boundaries.  
-* **AUTH-203**: Stateless JWT Authentication & Protected Profile Endpoint.  
-* **DOC-301**: Domain Modeling, Relational Integrity & Query Performance (Document entity, role-based DocumentMember, compound unique constraints, and B-tree indexing).  
-* **DOC-302**: Documents CRUD API, Atomic Ownership Ingestion, Multi-Tenant Scope Isolation & $N+1$ Query Elimination (select\_related, prefetch\_related).  
-* **DOC-303**: Granular Object-Level Permissions (IsDocumentCollaborator), Member Delegation Endpoint (/members/), and Owner-Only Destruction Protections.  
-* **TEST-401**: Enterprise Automated Testing Harness & CI Quality Gates (pytest-django, factory\_boy dynamic model factories, RBAC matrix regression testing, and query-count assertions).  
-* **CACHE-501**: High-Throughput In-Memory Caching Layer (django-redis, Cache-Aside pattern, zero-query subsequent reads, and proactive cache invalidation policies).  
-* **RATE-502**: Tiered Rate Limiting & Abuse Prevention (Redis atomic sliding-window throttling, scoped public IP protection against brute-force hashing, user quotas, and zero-SQL 429 interception).  
-* **ASYNC-601**: ASGI Engine Migration & Asynchronous Non-Blocking LLM Streaming Pipeline via DocumentAiStreamView using Chunked application/x-ndjson.  
-* **TASK-602**: Celery \+ Redis Asynchronous Task Infrastructure with Task Retries, Structured Telemetry, and Non-blocking Export Jobs.  
-* **DEVOPS-603**: Multi-Container Docker Infrastructure Provisioning with Python 3.13-slim, Redis 7, and pgvector/pgvector:pg16 Database Nodes.
+## Engineering Sprint Changelog
+
+| Ticket | Summary |
+| :-- | :-- |
+| **AUTH-201** | Custom User Model with UUID primary key, PostgreSQL integration, and zero schema drift. |
+| **AUTH-202** | User registration endpoint with serializer validation and transaction boundaries. |
+| **AUTH-203** | Stateless JWT authentication and protected profile endpoint. |
+| **DOC-301** | Domain modeling, relational integrity, and query performance (`Document` entity, role-based `DocumentMember`, compound unique constraints, B-tree indexing). |
+| **DOC-302** | Documents CRUD API, atomic ownership ingestion, multi-tenant scope isolation, and N+1 query elimination (`select_related`, `prefetch_related`). |
+| **DOC-303** | Granular object-level permissions (`IsDocumentCollaborator`), member delegation endpoint (`/members/`), and owner-only destruction protections. |
+| **TEST-401** | Automated testing harness and CI quality gates (pytest-django, factory_boy factories, RBAC matrix regression tests, query-count assertions). |
+| **CACHE-501** | In-memory caching layer (django-redis, Cache-Aside, zero-query subsequent reads, proactive invalidation). |
+| **RATE-502** | Tiered rate limiting and abuse prevention (Redis sliding-window throttling, scoped IP protection against brute-force hashing, user quotas, zero-SQL 429 interception). |
+| **ASYNC-601** | ASGI engine migration and async non-blocking LLM streaming via `DocumentAiStreamView` using chunked `application/x-ndjson`. |
+| **TASK-602** | Celery + Redis async task infrastructure with retries, structured telemetry, and non-blocking export jobs. |
+| **DEVOPS-603** | Multi-container Docker infrastructure with Python 3.13-slim, Redis 7, and `pgvector/pgvector:pg16` database nodes. |
